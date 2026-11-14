@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <!-- Windows target so the published app can open in its own desktop window (WinForms + WebView2) -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <Product>SQL Server Manager</Product>
+    <AssemblyTitle>SQL Server Manager</AssemblyTitle>
+  </PropertyGroup>
+
+  <!--
+    publish-desktop.ps1 / the Desktop publish profile: start without a console window.
+    OutputType stays Exe (the package that adds _framework/blazor.web.js skips WinExe builds);
+    only the exe's Windows subsystem is switched to a window app.
+  -->
+  <PropertyGroup Condition="'$(DesktopBuild)' == 'true'">
+    <_UseWindowsGraphicalUserInterface>true</_UseWindowsGraphicalUserInterface>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WinForms names (Timer, Icon, MenuItem…) would clash with the app's own -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.1" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
+  </ItemGroup>
+
+  <!-- The WebView2 package also adds its WPF control, which this WinForms window doesn't use -->
+  <Target Name="RemoveWebView2Wpf" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
+
+  <ItemGroup>
+    <None Update="app.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

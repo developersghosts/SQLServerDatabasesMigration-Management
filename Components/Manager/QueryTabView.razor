@@ -1,0 +1,438 @@
+@using System.Data
+@using System.Text
+@using Microsoft.Data.SqlClient
+@inherits LocalizedComponentBase
+@implements IAsyncDisposable
+@inject ManagerSession Session
+@inject ExplorerService Explorer
+@inject IJSRuntime JS
+
+<div class="query">
+    <div class="toolbar">
+        <button class="btn sm primary" @onclick="() => ExecuteAsync(false)" disabled="@Tab.IsRunning" title="F5 / Ctrl+E">
+            <Icon Name="play" /> @L["Execute"]
+        </button>
+        <button class="btn sm" @onclick="Cancel" disabled="@(!Tab.IsRunning)" title="Alt+Break">
+            <Icon Name="stop" /> @L["Cancel"]
+        </button>
+        <button class="btn sm" @onclick="() => ExecuteAsync(true)" disabled="@Tab.IsRunning" title="Ctrl+F5">
+            <Icon Name="check" /> @L["Parse"]
+        </button>
+        <span class="tb-sep"></span>
+        <label class="tb-label" for="db-@Tab.Id">@L["Database"]</label>
+        <select id="db-@Tab.Id" class="input sm db-select" dir="ltr" value="@Tab.Database" @onchange="ChangeDatabaseAsync" disabled="@Tab.IsRunning">
+            @if (Tab.Database is null)
+            {
+                <option value="">—</option>
+            }
+            else if (!databases.Contains(Tab.Database, StringComparer.OrdinalIgnoreCase))
+            {
+                <option value="@Tab.Database" selected>@Tab.Database</option>
+            }
+            @foreach (var db in databases)
+            {
+                <option value="@db" selected="@string.Equals(db, Tab.Database, StringComparison.OrdinalIgnoreCase)">@db</option>
+            }
+        </select>
+        <span class="tb-sep"></span>
+        <label class="btn sm file-btn" title="@L["OpenFile"]">
+            <Icon Name="open" /> @L["OpenFile"]
+            <InputFile class="hidden-file" accept=".sql,.txt" OnChange="OpenFileAsync" />
+        </label>
+        <button class="btn sm" @onclick="SaveAsync" title="Ctrl+S"><Icon Name="save" /> @L["SaveFile"]</button>
+        <span class="tb-spacer"></span>
+        <label class="tb-label" for="max-@Tab.Id">@L["MaxRows"]</label>
+        <select id="max-@Tab.Id" class="input sm" @bind="maxRows" disabled="@Tab.IsRunning">
+            <option value="1000">1,000</option>
+            <option value="10000">10,000</option>
+            <option value="100000">100,000</option>
+            <option value="1000000">1,000,000</option>
+        </select>
+    </div>
+
+    <div class="editor" @ref="editorBox">
+        <pre class="gutter" @ref="gutter" aria-hidden="true"></pre>
+        <textarea @ref="textarea" class="code" dir="ltr" wrap="off" spellcheck="false" autocomplete="off"
+                  aria-label="@L["QueryEditor"]" placeholder="@L["QueryPlaceholder"]"
+                  value="@Tab.Sql" @onchange="OnSqlChanged"></textarea>
+    </div>
+
+    <div class="splitter-y" @ref="splitter" role="separator" aria-orientation="horizontal"></div>
+
+    <div class="results">
+        <div class="result-tabs" role="tablist">
+            <button class="rtab @(Tab.ShowMessages ? null : "active")" role="tab" @onclick="() => Tab.ShowMessages = false">
+                @L["Results"] @if (Execution is { Results.Count: > 0 } e) { <span class="count">@e.Results.Count</span> }
+            </button>
+            <button class="rtab @(Tab.ShowMessages ? "active" : null)" role="tab" @onclick="() => Tab.ShowMessages = true">
+                @L["Messages"] @if (Execution is { HasErrors: true }) { <span class="count bad">!</span> }
+            </button>
+        </div>
+        <div class="result-body @(Tab.ShowMessages ? "messages" : null)">
+            @if (Execution is null)
+            {
+                <div class="empty">@L["NoResultsYet"]</div>
+            }
+            else if (!Tab.ShowMessages)
+            {
+                @if (Execution.Results.Count == 0)
+                {
+                    <div class="empty">@(Tab.IsRunning ? L["Executing"] : L["NoResultSets"])</div>
+                }
+                @for (var i = 0; i < Execution.Results.Count; i++)
+                {
+                    var index = i;
+                    <ResultGrid @key="Execution.Results[index]" Set="Execution.Results[index]" Server="Tab.Server" Index="index" Multiple="@(Execution.Results.Count > 1)" />
+                }
+            }
+            else
+            {
+                <div class="messages-list" dir="ltr">
+                    @foreach (var message in Execution.Messages)
+                    {
+                        if (message.Line is { } line)
+                        {
+                            <div class="msg @RunLog.MessageClass(message) link" dir="auto" title="@L["GoToLine"]" @onclick="() => GoToLineAsync(line)">@message.Text</div>
+                        }
+                        else
+                        {
+                            <div class="msg @RunLog.MessageClass(message)" dir="auto">@message.Text</div>
+                        }
+                    }
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="statusbar @StatusClass" dir="@L.Dir">
+        <span class="status-main">
+            @if (Tab.IsRunning)
+            {
+                <span class="spinner tiny light"></span>
+            }
+            @StatusText
+        </span>
+        <span class="status-cell"><bdi>@Tab.Server.DisplayName</bdi> (<bdi>@Tab.Server.Info.ProductVersion</bdi>)</span>
+        <span class="status-cell"><bdi>@Tab.Server.Login</bdi>@(Tab.SessionId is { } spid ? $" ({spid})" : "")</span>
+        <span class="status-cell"><bdi>@(Tab.Database ?? "—")</bdi></span>
+        <span class="status-cell mono"><bdi>@Elapsed.ToString(@"hh\:mm\:ss")</bdi></span>
+        <span class="status-cell"><bdi>@((Execution?.RowsReturned ?? 0).ToString("N0"))</bdi> @L["RowsCount"]</span>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public QueryTab Tab { get; set; } = default!;
+
+    private ElementReference textarea;
+    private ElementReference gutter;
+    private ElementReference editorBox;
+    private ElementReference splitter;
+    private DotNetObjectReference<QueryTabView>? reference;
+    private List<string> databases = [];
+    private int maxRows = 100_000;
+    private bool sqlSetByServer = true;
+    private System.Threading.Timer? clock;
+
+    private QueryExecution? Execution => Tab.Execution;
+
+    private TimeSpan Elapsed => Execution switch
+    {
+        null => TimeSpan.Zero,
+        { Completed: true } e => e.Elapsed,
+        { } e => DateTime.Now - e.Started
+    };
+
+    private string StatusClass => Tab.IsRunning ? "running"
+        : Tab.ConnectionError is not null && Execution is null ? "error"
+        : Execution is null ? "idle"
+        : Execution.Cancelled ? "warn"
+        : Execution.HasErrors ? "error"
+        : "ok";
+
+    private string StatusText => Tab.IsRunning ? L["Executing"]
+        : Tab.ConnectionError is not null && Execution is null ? L["ConnectionFailed"] + ": " + Tab.ConnectionError
+        : Execution is null ? (Tab.Connection is { State: ConnectionState.Open } ? L["Connected"] : L["NotConnected"])
+        : Execution.Cancelled ? L["QueryCancelled"]
+        : Execution.HasErrors ? L["QueryCompletedWithErrors"]
+        : L["QuerySucceeded"];
+
+    private sealed record EditorState(string Text, int Start, int End);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            databases = await Explorer.GetDatabaseNamesAsync(Tab.Server);
+        }
+        catch (Exception)
+        {
+            databases = [];
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            reference = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("sqlManager.registerEditor", textarea, gutter, reference);
+            await JS.InvokeVoidAsync("sqlManager.initSplitter", splitter, editorBox, "y", "mgr-editor-height", 80, 2000);
+
+            if (Tab.Connection is null && !Tab.IsRunning)
+            {
+                await EnsureConnectionAsync(CancellationToken.None);
+                StateHasChanged();
+            }
+
+            if (Tab.ExecuteOnOpen)
+            {
+                Tab.ExecuteOnOpen = false;
+                await ExecuteAsync(false);
+            }
+            else if (Session.ActiveTab == Tab)
+            {
+                await JS.InvokeVoidAsync("sqlManager.focus", textarea);
+            }
+        }
+
+        if (sqlSetByServer)
+        {
+            sqlSetByServer = false;
+            await JS.InvokeVoidAsync("sqlManager.refreshGutter", textarea);
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnShortcut(string action)
+    {
+        switch (action)
+        {
+            case "execute":
+                await ExecuteAsync(false);
+                break;
+            case "parse":
+                await ExecuteAsync(true);
+                break;
+            case "cancel":
+                Cancel();
+                break;
+            case "save":
+                await SaveAsync();
+                break;
+        }
+    }
+
+    private void OnSqlChanged(ChangeEventArgs e) => Tab.Sql = e.Value as string ?? string.Empty;
+
+    private async Task<SqlConnection?> EnsureConnectionAsync(CancellationToken cancellationToken)
+    {
+        if (Tab.Connection is { State: ConnectionState.Open } open)
+            return open;
+
+        if (Tab.Connection is not null)
+        {
+            await Tab.Connection.DisposeAsync();
+            Tab.Connection = null;
+        }
+
+        try
+        {
+            // Not pooled: closing the tab really ends the session and rolls back what it left open
+            var builder = new SqlConnectionStringBuilder(Tab.Server.ConnectionStringFor(Tab.Database)) { Pooling = false };
+            var connection = new SqlConnection(builder.ConnectionString);
+            await connection.OpenAsync(cancellationToken);
+            Tab.Connection = connection;
+            Tab.SessionId = connection.ServerProcessId;
+            Tab.Database = connection.Database;
+            Tab.ConnectionError = null;
+            return connection;
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            Tab.ConnectionError = ex.Message;
+            return null;
+        }
+    }
+
+    private async Task ExecuteAsync(bool parseOnly)
+    {
+        if (Tab.IsRunning)
+            return;
+
+        var state = await JS.InvokeAsync<EditorState>("sqlManager.getEditorState", textarea);
+        Tab.Sql = state.Text;
+
+        var start = Math.Clamp(Math.Min(state.Start, state.End), 0, state.Text.Length);
+        var end = Math.Clamp(Math.Max(state.Start, state.End), 0, state.Text.Length);
+        var hasSelection = end > start && !string.IsNullOrWhiteSpace(state.Text[start..end]);
+        var script = hasSelection ? state.Text[start..end] : state.Text;
+        var lineOffset = hasSelection ? state.Text.AsSpan(0, start).Count('\n') : 0;
+        if (string.IsNullOrWhiteSpace(script))
+            return;
+
+        var execution = new QueryExecution();
+        var cancellation = new CancellationTokenSource();
+        Tab.Execution = execution;
+        Tab.Cancellation = cancellation;
+        Tab.IsRunning = true;
+        Tab.ShowMessages = false;
+        clock = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 1000, 1000);
+        Session.Notify();
+        StateHasChanged();
+
+        try
+        {
+            var connection = await EnsureConnectionAsync(cancellation.Token);
+            if (connection is null)
+            {
+                execution.AddError(Tab.ConnectionError ?? L["ConnectionFailed"]);
+            }
+            else
+            {
+                await QueryRunner.RunAsync(connection, script, execution, new RunOptions
+                {
+                    LineOffset = lineOffset,
+                    MaxRowsPerResult = maxRows,
+                    ParseOnly = parseOnly,
+                    OnProgress = async () =>
+                    {
+                        StateHasChanged();
+                        await Task.Yield();
+                    },
+                    OnBackgroundMessage = () => _ = InvokeAsync(() =>
+                    {
+                        execution.DrainPending();
+                        StateHasChanged();
+                    })
+                }, cancellation.Token);
+
+                if (connection.State == ConnectionState.Open)
+                {
+                    Tab.Database = connection.Database;
+                }
+                else
+                {
+                    await connection.DisposeAsync();
+                    Tab.Connection = null;
+                    Tab.SessionId = null;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            execution.AddError(ex.Message);
+        }
+        finally
+        {
+            if (clock is not null)
+                await clock.DisposeAsync();
+            clock = null;
+            execution.Completed = true;
+
+            if (execution.Cancelled)
+                execution.Messages.Add(new QueryMessage(MessageKind.Error, "Query was cancelled by user."));
+            else if (!execution.HasErrors && execution.Results.Count == 0 && execution.Messages.All(m => m.Kind == MessageKind.Info))
+                execution.Messages.Add(new QueryMessage(MessageKind.Success, "Commands completed successfully."));
+            execution.Messages.Add(new QueryMessage(MessageKind.Info, $"\nCompletion time: {DateTimeOffset.Now:yyyy-MM-ddTHH:mm:ss.fffffffzzz}"));
+
+            Tab.IsRunning = false;
+            Tab.Cancellation = null;
+            cancellation.Dispose();
+            Tab.ShowMessages = execution.HasErrors || execution.Cancelled || execution.Results.Count == 0;
+            Session.Notify();
+            StateHasChanged();
+        }
+    }
+
+    private void Cancel()
+    {
+        try
+        {
+            Tab.Cancellation?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private async Task ChangeDatabaseAsync(ChangeEventArgs e)
+    {
+        var database = e.Value as string;
+        if (string.IsNullOrEmpty(database) || database == Tab.Database)
+            return;
+
+        if (Tab.Connection is { State: ConnectionState.Open } connection)
+        {
+            try
+            {
+                await connection.ChangeDatabaseAsync(database);
+                Tab.Database = connection.Database;
+            }
+            catch (Exception ex)
+            {
+                Session.Toast(ex.Message, ToastKind.Error);
+            }
+        }
+        else
+        {
+            Tab.Database = database;
+        }
+
+        Session.Notify();
+    }
+
+    private async Task GoToLineAsync(int line) => await JS.InvokeVoidAsync("sqlManager.focusLine", textarea, line);
+
+    private async Task OpenFileAsync(InputFileChangeEventArgs e)
+    {
+        const long maxSize = 20 * 1024 * 1024;
+        if (e.File.Size > maxSize)
+        {
+            Session.Toast(L["FileTooLarge"], ToastKind.Error);
+            return;
+        }
+
+        try
+        {
+            await using var stream = e.File.OpenReadStream(maxSize);
+            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            Tab.Sql = await reader.ReadToEndAsync();
+            Tab.FileName = e.File.Name;
+            sqlSetByServer = true;
+            Session.Notify();
+        }
+        catch (Exception ex)
+        {
+            Session.Toast(ex.Message, ToastKind.Error);
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        var state = await JS.InvokeAsync<EditorState>("sqlManager.getEditorState", textarea);
+        Tab.Sql = state.Text;
+        var name = Tab.FileName ?? Tab.Name;
+        if (!name.EndsWith(".sql", StringComparison.OrdinalIgnoreCase))
+            name += ".sql";
+        // BOM so SSMS and Notepad open Arabic text correctly
+        await JS.InvokeVoidAsync("sqlManager.download", name, "﻿" + state.Text, "text/plain;charset=utf-8");
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (clock is not null)
+            await clock.DisposeAsync();
+
+        try
+        {
+            await JS.InvokeVoidAsync("sqlManager.unregisterEditor", textarea);
+        }
+        catch (Exception)
+        {
+            // The circuit is gone
+        }
+
+        reference?.Dispose();
+        base.Dispose();
+    }
+}

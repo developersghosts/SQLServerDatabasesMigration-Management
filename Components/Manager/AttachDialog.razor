@@ -1,0 +1,161 @@
+@using System.Text
+@inherits SqlDialogBase
+@inject AdminService Admin
+
+<ModalFrame Title="@L["AttachDatabase"]" Subject="@Server.DisplayName" IconName="database" Size="lg" Busy="@Run.IsRunning" OnClose="Close">
+    <ChildContent>
+        @if (browsing)
+        {
+            <ServerFileBrowser Server="Server" Mode="FileBrowserMode.Open" InitialPath="@(string.IsNullOrEmpty(mdf) ? dataPath : mdf)"
+                               Extensions='new[] { ".mdf" }' OnPick="PickAsync" OnCancel="() => browsing = false" />
+        }
+        else
+        {
+            <div class="form-grid">
+                <label class="form-label" for="at-mdf">@L["PrimaryFile"] *</label>
+                <div class="path-cell">
+                    <input id="at-mdf" class="input mono" dir="ltr" @bind="mdf" @bind:event="oninput" placeholder="C:\Data\MyDb.mdf" disabled="@Run.IsRunning" />
+                    <button class="btn sm" @onclick="() => browsing = true" disabled="@Run.IsRunning">@L["Browse"]</button>
+                    <button class="btn sm" @onclick="ReadAsync" disabled="@(Run.IsRunning || reading || string.IsNullOrWhiteSpace(mdf))">@(reading ? L["Loading"] : L["ReadFile"])</button>
+                </div>
+
+                <label class="form-label" for="at-name">@L["AttachAs"] *</label>
+                <input id="at-name" class="input mono" dir="ltr" @bind="name" @bind:event="oninput" disabled="@Run.IsRunning" />
+            </div>
+
+            @if (readError is not null)
+            {
+                <div class="banner warn">@L["ReadPrimaryFailed"] <bdi class="mono small">@readError</bdi></div>
+            }
+
+            <h3 class="section-title">@L["DatabaseFiles"]</h3>
+            <div class="file-rows">
+                <div class="path-cell">
+                    <input class="input mono" dir="ltr" value="@mdf" readonly />
+                </div>
+                @for (var i = 0; i < files.Count; i++)
+                {
+                    var index = i;
+                    <div class="path-cell">
+                        <input class="input mono" dir="ltr" value="@files[index]" placeholder="C:\Data\MyDb_log.ldf" @onchange="e => files[index] = e.Value as string ?? string.Empty" disabled="@Run.IsRunning" />
+                        <button class="icon-btn" title="@L["Delete"]" @onclick="() => files.RemoveAt(index)"><Icon Name="close" /></button>
+                    </div>
+                }
+                <button class="btn xs" @onclick='() => files.Add("")'><Icon Name="plus" /> @L["AddFile"]</button>
+            </div>
+
+            <label class="check section-toggle"><input type="checkbox" @bind="rebuildLog" disabled="@Run.IsRunning" /> @L["RebuildLog"]</label>
+            <p class="hint">@L["AttachHint"]</p>
+
+            @if (Error is not null)
+            {
+                <div class="status error">@Error</div>
+            }
+
+            <SqlPreview Sql="@BuildSql()" />
+            <RunLog Run="Run" />
+        }
+    </ChildContent>
+    <Footer>
+        <button class="btn" @onclick="() => ScriptToQuery(Server, null, BuildSql())" disabled="@(Run.IsRunning || !IsValid)"><Icon Name="query" /> @L["ScriptToNewQuery"]</button>
+        <span class="spacer"></span>
+        @if (Run.IsRunning)
+        {
+            <button class="btn" @onclick="Run.Cancel">@L["Stop"]</button>
+        }
+        else
+        {
+            <button class="btn" @onclick="Close">@L["Cancel"]</button>
+            <button class="btn primary" @onclick="AttachAsync" disabled="@(!IsValid)">@L["Attach"]</button>
+        }
+    </Footer>
+</ModalFrame>
+
+@code {
+    [Parameter, EditorRequired] public ManagedServer Server { get; set; } = default!;
+
+    private string mdf = string.Empty;
+    private string name = string.Empty;
+    private string dataPath = string.Empty;
+    /// <summary>Files besides the .mdf (log and secondary data files).</summary>
+    private List<string> files = [];
+    private bool rebuildLog;
+    private bool browsing;
+    private bool reading;
+    private string? readError;
+
+    private bool IsValid => !string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(mdf);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            dataPath = (await Admin.GetDefaultPathsAsync(Server)).Data;
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+    }
+
+    private async Task PickAsync(string path)
+    {
+        mdf = path;
+        browsing = false;
+        await ReadAsync();
+    }
+
+    private async Task ReadAsync()
+    {
+        reading = true;
+        readError = null;
+        var path = mdf.Trim();
+        files = [];
+        if (string.IsNullOrWhiteSpace(name))
+            name = Path.GetFileNameWithoutExtension(path.Replace('\\', '/').Split('/').Last());
+        StateHasChanged();
+
+        try
+        {
+            var (database, stored) = await Admin.ReadPrimaryFileAsync(Server, path);
+            if (!string.IsNullOrWhiteSpace(database))
+                name = database;
+
+            // The paths inside the .mdf are where the files were; after copying they are usually next to the .mdf
+            var folder = AdminService.DirectoryOf(path);
+            files = [];
+            foreach (var file in stored.Skip(1))
+                files.Add(folder + file[(file.LastIndexOfAny(['\\', '/']) + 1)..]);
+        }
+        catch (Exception ex)
+        {
+            readError = ex.Message;
+        }
+        finally
+        {
+            reading = false;
+        }
+    }
+
+    private string BuildSql()
+    {
+        if (!IsValid)
+            return string.Empty;
+
+        var list = files.Where(f => !string.IsNullOrWhiteSpace(f)).Select(f => f.Trim()).Prepend(mdf.Trim()).ToList();
+        if (rebuildLog)
+            list = list.Where((f, i) => i == 0 || !f.EndsWith(".ldf", StringComparison.OrdinalIgnoreCase)).ToList();
+        var sb = new StringBuilder($"CREATE DATABASE {Sql.Q(name.Trim())} ON\n");
+        sb.Append(string.Join(",\n", list.Select(f => $"    (FILENAME = {Sql.Lit(f)})")));
+        sb.Append(rebuildLog ? "\nFOR ATTACH_REBUILD_LOG;\nGO\n" : "\nFOR ATTACH;\nGO\n");
+        return sb.ToString();
+    }
+
+    private async Task AttachAsync()
+    {
+        if (!await RunSqlAsync(Server, "master", BuildSql()))
+            return;
+        await Session.RefreshWhereAsync(n => n.Server == Server && n.Kind == NodeKind.DatabasesFolder);
+        Finish("DatabaseAttached");
+    }
+}

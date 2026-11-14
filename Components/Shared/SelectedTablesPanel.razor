@@ -1,0 +1,117 @@
+@inherits LocalizedComponentBase
+@inject TableCopyJob CopyJob
+
+<section class="card panel">
+    <div class="card-head">
+        <h2>@L["TablesToCopy"]</h2>
+        <span class="role-tag dst">@L["Destination"]</span>
+    </div>
+
+    @if (Server is not null)
+    {
+        <div class="panel-sub">
+            <bdi class="mono">@Server.ServerName / @Server.DatabaseName</bdi>
+            <bdi class="version-pill">@Server.FriendlyVersion</bdi>
+        </div>
+    }
+
+    @if (IsLoading)
+    {
+        <div class="empty">@L["LoadingTables"]</div>
+    }
+    else if (!string.IsNullOrEmpty(Error))
+    {
+        <div class="status error">
+            <div class="status-title">@L["LoadTablesFailed"]</div>
+            <div class="status-body"><bdi>@Error</bdi></div>
+        </div>
+    }
+    else if (CopyJob.Items.Count == 0)
+    {
+        <div class="empty">@L["SelectTablesHint"]</div>
+    }
+    else
+    {
+        <div class="panel-stats">
+            <span><strong>@CopyJob.Items.Count</strong> @L["TablesCount"]</span>
+            <span><strong>@CopyJob.TotalRows.ToString("N0")</strong> @L["ColSourceRows"]</span>
+            <span><strong>@CopyJob.CopiedRows.ToString("N0")</strong> @L["CopiedLabel"]</span>
+            @if (CopyJob.SkippedRows > 0)
+            {
+                <span class="muted"><strong>@CopyJob.SkippedRows.ToString("N0")</strong> @L["SkippedLabel"]</span>
+            }
+        </div>
+
+        <div class="table-scroll">
+            <table class="grid">
+                <thead>
+                    <tr>
+                        <th>@L["ColTable"]</th>
+                        <th class="num">@L["ColSourceRows"]</th>
+                        <th class="num">@L["ColDestinationRows"]</th>
+                        <th class="num">@L["ColCopied"]</th>
+                        <th class="num" title="@L["SkippedHint"]">@L["ColSkipped"]</th>
+                        <th>@L["ColStatus"]</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in CopyJob.Items)
+                    {
+                        <tr>
+                            <td class="mono">
+                                <bdi><span class="muted">@item.Destination.Schema.</span>@item.Destination.Name</bdi>
+                                @if (item.IsRenamed)
+                                {
+                                    <div class="row-note">@L["FromSourceTable"] <bdi>@item.Source.Name</bdi></div>
+                                }
+                                @if (!string.IsNullOrEmpty(item.Error) && item.Status == TableCopyStatus.Failed)
+                                {
+                                    <div class="row-error" title="@item.Error"><bdi>@item.Error</bdi></div>
+                                }
+                            </td>
+                            <td class="num">@item.SourceRows.ToString("N0")</td>
+                            <td class="num">@item.DestinationRows.ToString("N0")</td>
+                            <td class="num">
+                                @switch (item.Status)
+                                {
+                                    case TableCopyStatus.Pending or TableCopyStatus.Clearing:
+                                        <span>—</span>
+                                        break;
+                                    case TableCopyStatus.Copying:
+                                        @* Rows read so far; how many are new is only known when the table finishes *@
+                                        <span class="muted">@item.ProcessedRows.ToString("N0")</span>
+                                        break;
+                                    default:
+                                        <span>@item.CopiedRows.ToString("N0")</span>
+                                        break;
+                                }
+                            </td>
+                            <td class="num muted">@(item.Status is TableCopyStatus.Copied or TableCopyStatus.RolledBack ? item.SkippedRows.ToString("N0") : "—")</td>
+                            <td><span class="badge @BadgeClass(item.Status)">@StatusText(item.Status)</span></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter] public ServerInfo? Server { get; set; }
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public string? Error { get; set; }
+
+    private string StatusText(TableCopyStatus status) =>
+        status == TableCopyStatus.Copied && CopyJob.State == CopyJobState.Committed
+            ? L["StatusSaved"]
+            : L[$"Status{status}"];
+
+    private static string BadgeClass(TableCopyStatus status) => status switch
+    {
+        TableCopyStatus.Copied => "both",
+        TableCopyStatus.Clearing or TableCopyStatus.Copying => "active",
+        TableCopyStatus.Failed => "failed",
+        TableCopyStatus.Stopped or TableCopyStatus.RolledBack => "missing",
+        _ => "pending"
+    };
+}

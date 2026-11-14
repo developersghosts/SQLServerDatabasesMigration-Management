@@ -1,0 +1,160 @@
+@inherits LocalizedComponentBase
+@inject TableCopyJob CopyJob
+@inject MigrationSession Session
+@inject SqlServerService SqlServer
+@inject IJSRuntime JS
+
+@if (CopyJob.Items.Count > 0 || CopyJob.State != CopyJobState.Idle)
+{
+    <section class="card copy-bar">
+        <div class="copy-actions">
+            <button class="btn primary" @onclick="CopyAsync" disabled="@(!CanCopy || isComparing || CopyJob.IsLocked || CopyJob.Items.Count == 0)">
+                @(isComparing ? L["Comparing"] : L["Copy"])
+            </button>
+            <button class="btn" @onclick="CopyJob.Stop" disabled="@(CopyJob.State != CopyJobState.Copying)">@L["Stop"]</button>
+            <button class="btn danger" @onclick="RollbackAsync" disabled="@(CopyJob.State != CopyJobState.AwaitingDecision)">@L["Rollback"]</button>
+            <button class="btn success" @onclick="CommitAsync" disabled="@(CopyJob.State != CopyJobState.AwaitingDecision)">@L["Commit"]</button>
+
+            <label class="toggle">
+                <input type="checkbox" @bind="CopyJob.ClearDestination" disabled="@CopyJob.IsLocked" />
+                @L["ClearDestination"]
+            </label>
+        </div>
+
+        <div class="progress-head">
+            <span>@StateText</span>
+            <strong>@CopyJob.Percent%</strong>
+        </div>
+        <div class="progress" role="progressbar" aria-valuenow="@CopyJob.Percent" aria-valuemin="0" aria-valuemax="100">
+            <div class="progress-fill @StateClass" style="width: @(CopyJob.Percent)%"></div>
+        </div>
+        <div class="progress-foot muted">
+            <span><bdi>@CopyJob.ProcessedRows.ToString("N0") / @CopyJob.TotalRows.ToString("N0")</bdi> @L["RowsCount"]</span>
+            @if (CopyJob.CurrentTable is { } current)
+            {
+                <span>@L["CurrentTable"]: <bdi class="mono">@current</bdi></span>
+            }
+        </div>
+
+        @if (compareError is not null)
+        {
+            <div class="status error">
+                <div class="status-title">@L["CompareFailed"]</div>
+                <div class="status-body"><bdi>@compareError</bdi></div>
+            </div>
+        }
+
+        @if (CopyJob.State == CopyJobState.AwaitingDecision)
+        {
+            <div class="banner info">@L["AwaitingDecisionHint"]</div>
+        }
+        else if (CopyJob.State == CopyJobState.Failed && !string.IsNullOrEmpty(CopyJob.Error))
+        {
+            <div class="status error"><bdi>@CopyJob.Error</bdi></div>
+        }
+    </section>
+}
+
+@if (differences is not null)
+{
+    <CopyReviewDialog Comparison="differences"
+                      RenamedTables="CopyJob.Items.Where(i => i.IsRenamed).ToList()"
+                      TablesWithData="CopyJob.ClearDestination ? [] : CopyJob.Items.Where(i => i.DestinationRows > 0).ToList()"
+                      ClearDestination="CopyJob.ClearDestination"
+                      OnConfirm="StartCopy"
+                      OnCancel="() => differences = null" />
+}
+
+@if (showResult)
+{
+    <CopyResultDialog OnClose="() => showResult = false" />
+}
+
+@code {
+    [Parameter] public bool CanCopy { get; set; } = true;
+
+    /// <summary>Raised after a commit or rollback so the page can reload the row counts.</summary>
+    [Parameter] public EventCallback OnFinished { get; set; }
+
+    private string StateText => L[$"State{CopyJob.State}"];
+
+    private string StateClass => CopyJob.State switch
+    {
+        CopyJobState.Committed => "ok",
+        CopyJobState.Failed or CopyJobState.RolledBack => "error",
+        CopyJobState.AwaitingDecision => "pending",
+        _ => string.Empty
+    };
+
+    // Result dialog, shown after Save (Commit)
+    private bool showResult;
+
+    protected override void OnInitialized() => CopyJob.Changed += OnJobChanged;
+
+    private void OnJobChanged() => InvokeAsync(StateHasChanged);
+
+    private bool isComparing;
+    private string? compareError;
+
+    // Set while the review dialog is open
+    private ColumnComparison? differences;
+
+    private async Task CopyAsync()
+    {
+        isComparing = true;
+        compareError = null;
+
+        ColumnComparison found;
+        try
+        {
+            found = await SqlServer.CompareColumnsAsync(
+                Session.Source.ConnectionString,
+                Session.Destination.ConnectionString,
+                CopyJob.Items.Select(i => (i.FullName, i.DestinationName)));
+        }
+        catch (Exception ex)
+        {
+            compareError = ex.Message;
+            return;
+        }
+        finally
+        {
+            isComparing = false;
+        }
+
+        // Review first when columns differ, tables are matched by a different name,
+        // existing data is about to be deleted, or only new rows will be added to tables with data
+        if (found.HasDifferences || CopyJob.ClearDestination || CopyJob.Items.Any(i => i.IsRenamed || i.DestinationRows > 0))
+            differences = found;
+        else
+            StartCopy();
+    }
+
+    private void StartCopy()
+    {
+        differences = null;
+        CopyJob.Start(Session.Source.ConnectionString, Session.Destination.ConnectionString);
+    }
+
+    private async Task RollbackAsync()
+    {
+        if (!await JS.InvokeAsync<bool>("confirm", L["ConfirmRollback"]))
+            return;
+
+        await CopyJob.RollbackAsync();
+        await OnFinished.InvokeAsync();
+    }
+
+    private async Task CommitAsync()
+    {
+        await CopyJob.CommitAsync();
+        showResult = CopyJob.State is CopyJobState.Committed or CopyJobState.Failed;
+        await OnFinished.InvokeAsync();
+    }
+
+    public override void Dispose()
+    {
+        CopyJob.Changed -= OnJobChanged;
+        base.Dispose();
+    }
+}

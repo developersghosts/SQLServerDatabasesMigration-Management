@@ -1,0 +1,666 @@
+@inherits LocalizedComponentBase
+@inject ManagerSession Session
+@inject ManagerActions Actions
+@inject SchemaService Schema
+@inject AdminService Admin
+@inject ExplorerService Explorer
+
+<div class="view">
+    <div class="view-head">
+        <div class="view-title">
+            <Icon Name="table" />
+            <h2>@(IsNew ? L["NewTableTitle"] : L["TableDesigner"])</h2>
+            <bdi class="mono muted">@Tab.Server.DisplayName / @Tab.Database</bdi>
+        </div>
+        <div class="view-actions">
+            @if (!IsNew)
+            {
+                <button class="btn sm" @onclick="ConfirmReloadAsync" disabled="@loading"><Icon Name="refresh" /> @L["Refresh"]</button>
+            }
+            <button class="btn sm" @onclick="ScriptChanges" disabled="@(state is null)"><Icon Name="query" /> @L["GenerateChangeScript"]</button>
+            <button class="btn sm primary" @onclick="Save" disabled="@(state is null)"><Icon Name="save" /> @L["Save"]</button>
+        </div>
+    </div>
+
+    @if (loading)
+    {
+        <div class="empty">@L["Loading"]</div>
+    }
+    else if (error is not null)
+    {
+        <div class="status error"><bdi>@error</bdi></div>
+    }
+    else if (state is not null)
+    {
+        <div class="designer-name">
+            <label class="form-label" for="ds-@Tab.Id">@L["Schema"]</label>
+            <select id="ds-@Tab.Id" class="input sm mono" dir="ltr" @bind="state.Schema">
+                @foreach (var schema in state.Schemas)
+                {
+                    <option value="@schema">@schema</option>
+                }
+            </select>
+            <label class="form-label" for="dn-@Tab.Id">@L["TableName"]</label>
+            <input id="dn-@Tab.Id" class="input sm mono name-input" dir="ltr" @bind="state.Name" @bind:event="oninput" placeholder="Customers" />
+            @if (state.Original is { } original)
+            {
+                <span class="facts">
+                    <span><strong>@original.RowCount.ToString("N0")</strong> @L["RowsCount"]</span>
+                    @if (original.ReservedKb is { } kb)
+                    {
+                        <span><strong>@((kb / 1024m).ToString("N2"))</strong> MB</span>
+                    }
+                    <span>@L["Created"]: <bdi>@original.Created?.ToString("yyyy-MM-dd HH:mm")</bdi></span>
+                    <span>@L["Modified"]: <bdi>@original.Modified?.ToString("yyyy-MM-dd HH:mm")</bdi></span>
+                </span>
+            }
+        </div>
+
+        <div class="subtabs" role="tablist">
+            @foreach (var (key, label) in Sections)
+            {
+                <button class="subtab @(state.Section == key ? "active" : null)" role="tab" disabled="@(IsNew && key != "columns")" @onclick="() => state.Section = key">@L[label]</button>
+            }
+        </div>
+
+        @if (validation is not null)
+        {
+            <div class="status error">@validation</div>
+        }
+
+        @switch (state.Section)
+        {
+            case "columns":
+                <div class="grid-scroll">
+                    <table class="grid design-grid">
+                        <thead>
+                            <tr>
+                                <th class="check" title="@L["PrimaryKey"]">PK</th>
+                                <th>@L["ColumnName"]</th>
+                                <th>@L["DataType"]</th>
+                                <th>@L["Length"]</th>
+                                <th class="check">@L["AllowNulls"]</th>
+                                <th class="check">@L["Identity"]</th>
+                                <th>@L["SeedIncrement"]</th>
+                                <th>@L["DefaultValue"]</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @for (var i = 0; i < state.Columns.Count; i++)
+                            {
+                                var index = i;
+                                var column = state.Columns[index];
+                                <tr class="@(column.Removed ? "removed" : null) @(column.IsNew ? "added" : null)" @key="column">
+                                    <td class="check"><input type="checkbox" checked="@column.IsPrimaryKey" disabled="@(column.Removed || column.IsComputed)" @onchange="e => SetPrimaryKey(column, e)" /></td>
+                                    <td><input class="cell mono" dir="ltr" value="@column.Name" disabled="@column.Removed" @onchange="e => column.Name = Text(e)" /></td>
+                                    @if (column.IsComputed)
+                                    {
+                                        <td colspan="6" class="mono muted"><bdi>AS @column.Original!.ComputedDefinition</bdi> <span class="badge pending">@L["Computed"]</span></td>
+                                    }
+                                    else
+                                    {
+                                        <td><input class="cell mono" dir="ltr" list="types-@Tab.Id" value="@column.DataType" disabled="@column.Removed" @onchange="e => SetType(column, Text(e))" /></td>
+                                        <td><input class="cell mono narrow" dir="ltr" value="@column.Length" disabled="@(column.Removed || !ScriptBuilder.TakesLength(column.DataType))" @onchange="e => column.Length = Text(e)" placeholder="@(ScriptBuilder.TakesLength(column.DataType) ? "max" : "")" /></td>
+                                        <td class="check"><input type="checkbox" checked="@column.AllowNulls" disabled="@(column.Removed || column.IsPrimaryKey)" @onchange="e => column.AllowNulls = e.Value is true" /></td>
+                                        <td class="check"><input type="checkbox" checked="@column.IsIdentity" disabled="@(column.Removed || !column.IsNew)" title="@(column.IsNew ? null : L["IdentityExistingHint"])" @onchange="e => SetIdentity(column, e.Value is true)" /></td>
+                                        <td>
+                                            <div class="seed">
+                                                <input class="cell mono tiny" dir="ltr" value="@column.Seed" disabled="@(!column.IsIdentity || !column.IsNew)" @onchange="e => column.Seed = Text(e)" />
+                                                <input class="cell mono tiny" dir="ltr" value="@column.Increment" disabled="@(!column.IsIdentity || !column.IsNew)" @onchange="e => column.Increment = Text(e)" />
+                                            </div>
+                                        </td>
+                                        <td><input class="cell mono" dir="ltr" value="@column.Default" disabled="@column.Removed" placeholder="getdate(), 0, N'…'" @onchange="e => column.Default = Text(e)" /></td>
+                                    }
+                                    <td class="row-actions">
+                                        @if (IsNew)
+                                        {
+                                            <button class="icon-btn" title="@L["MoveUp"]" disabled="@(index == 0)" @onclick="() => Move(index, -1)"><Icon Name="up" /></button>
+                                        }
+                                        @if (column.Removed)
+                                        {
+                                            <button class="btn xs" @onclick="() => column.Removed = false">@L["Undo"]</button>
+                                        }
+                                        else
+                                        {
+                                            <button class="icon-btn danger" title="@L["RemoveColumn"]" @onclick="() => Remove(column)"><Icon Name="close" /></button>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <datalist id="types-@Tab.Id">
+                    @foreach (var type in state.Types)
+                    {
+                        <option value="@type"></option>
+                    }
+                </datalist>
+                <div class="section-actions">
+                    <button class="btn sm" @onclick="AddColumn"><Icon Name="plus" /> @L["AddColumn"]</button>
+                    <span class="muted small">@L["DesignerHint"]</span>
+                </div>
+                break;
+
+            case "indexes":
+                <div class="grid-scroll">
+                    <table class="grid">
+                        <thead>
+                            <tr>
+                                <th>@L["Name"]</th>
+                                <th>@L["Type"]</th>
+                                <th>@L["Columns"]</th>
+                                <th>@L["IncludedColumns"]</th>
+                                <th>@L["Filter"]</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var index in state.Original!.Indexes)
+                            {
+                                <tr>
+                                    <td class="mono"><bdi>@index.Name</bdi>@if (index.IsDisabled) { <span class="badge failed">@L["Disabled"]</span> }</td>
+                                    <td>
+                                        @if (index.IsPrimaryKey) { <span class="badge active">PK</span> }
+                                        else if (index.IsUniqueConstraint) { <span class="badge active">UQ</span> }
+                                        else if (index.IsUnique) { <span class="badge pending">UNIQUE</span> }
+                                        <span class="muted small">@index.TypeDesc</span>
+                                    </td>
+                                    <td class="mono"><bdi>@string.Join(", ", index.Columns.Select(c => c.Name + (c.Descending ? " DESC" : "")))</bdi></td>
+                                    <td class="mono muted"><bdi>@string.Join(", ", index.Included)</bdi></td>
+                                    <td class="mono muted"><bdi>@index.Filter</bdi></td>
+                                    <td class="row-actions">
+                                        <button class="btn xs" @onclick="() => OpenScript(ScriptBuilder.CreateIndex(state.Original.FullName, index))">@L["Script"]</button>
+                                        <button class="btn xs" @onclick='() => RunSql("Rebuild", $"ALTER INDEX {Sql.Q(index.Name)} ON {state.Original.FullName} REBUILD;")'>@L["Rebuild"]</button>
+                                        <button class="btn xs danger" @onclick='() => RunSql("Delete", ScriptBuilder.DropIndex(state.Original.FullName, index), danger: true)'>@L["Delete"]</button>
+                                    </td>
+                                </tr>
+                            }
+                            @if (state.Original.Indexes.Count == 0)
+                            {
+                                <tr><td colspan="6" class="empty">@L["NoItems"]</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="section-actions">
+                    <button class="btn sm" @onclick="NewIndex"><Icon Name="plus" /> @L["NewIndex"]</button>
+                </div>
+                break;
+
+            case "relationships":
+                <div class="grid-scroll">
+                    <table class="grid">
+                        <thead>
+                            <tr>
+                                <th>@L["Name"]</th>
+                                <th>@L["Columns"]</th>
+                                <th>@L["References"]</th>
+                                <th>@L["OnDelete"]</th>
+                                <th>@L["OnUpdate"]</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var fk in state.Original!.ForeignKeys)
+                            {
+                                <tr>
+                                    <td class="mono"><bdi>@fk.Name</bdi>@if (fk.IsDisabled) { <span class="badge failed">@L["Disabled"]</span> }</td>
+                                    <td class="mono"><bdi>@string.Join(", ", fk.Columns)</bdi></td>
+                                    <td class="mono"><bdi>@($"{fk.ReferencedSchema}.{fk.ReferencedTable} ({string.Join(", ", fk.ReferencedColumns)})")</bdi></td>
+                                    <td class="mono small">@fk.DeleteAction.Replace('_', ' ')</td>
+                                    <td class="mono small">@fk.UpdateAction.Replace('_', ' ')</td>
+                                    <td class="row-actions">
+                                        <button class="btn xs" @onclick="() => OpenScript(ScriptBuilder.AddForeignKey(state.Original.FullName, fk))">@L["Script"]</button>
+                                        <button class="btn xs danger" @onclick='() => RunSql("Delete", $"ALTER TABLE {state.Original.FullName} DROP CONSTRAINT {Sql.Q(fk.Name)};", danger: true)'>@L["Delete"]</button>
+                                    </td>
+                                </tr>
+                            }
+                            @if (state.Original.ForeignKeys.Count == 0)
+                            {
+                                <tr><td colspan="6" class="empty">@L["NoItems"]</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                <fieldset class="sub-form">
+                    <legend>@L["NewForeignKey"]</legend>
+                    <div class="form-grid">
+                        <label class="form-label">@L["Name"]</label>
+                        <input class="input sm mono" dir="ltr" @bind="state.FkName" placeholder="@DefaultFkName" />
+
+                        <label class="form-label">@L["ReferencedTable"]</label>
+                        <select class="input sm mono" dir="ltr" value="@state.FkTable" @onchange="e => SelectReferencedTableAsync(Text(e))">
+                            <option value="">—</option>
+                            @foreach (var table in state.Tables)
+                            {
+                                var key = $"{table.Schema}.{table.Name}";
+                                <option value="@key">@key</option>
+                            }
+                        </select>
+
+                        <label class="form-label">@L["Columns"]</label>
+                        <div class="fk-pairs">
+                            @for (var i = 0; i < state.FkPairs.Count; i++)
+                            {
+                                var pair = i;
+                                <div class="fk-pair">
+                                    <select class="input sm mono" dir="ltr" value="@state.FkPairs[pair].Column" @onchange="e => state.FkPairs[pair] = (Text(e), state.FkPairs[pair].RefColumn)">
+                                        <option value="">—</option>
+                                        @foreach (var column in state.Original!.Columns)
+                                        {
+                                            <option value="@column.Name">@column.Name</option>
+                                        }
+                                    </select>
+                                    <span class="arrow">→</span>
+                                    <select class="input sm mono" dir="ltr" value="@state.FkPairs[pair].RefColumn" @onchange="e => state.FkPairs[pair] = (state.FkPairs[pair].Column, Text(e))">
+                                        <option value="">—</option>
+                                        @foreach (var column in state.FkRefColumns)
+                                        {
+                                            <option value="@column">@column</option>
+                                        }
+                                    </select>
+                                    @if (state.FkPairs.Count > 1)
+                                    {
+                                        <button class="icon-btn" @onclick="() => state.FkPairs.RemoveAt(pair)"><Icon Name="close" /></button>
+                                    }
+                                </div>
+                            }
+                            <button class="btn xs" @onclick='() => state.FkPairs.Add(("", ""))'><Icon Name="plus" /> @L["AddColumnPair"]</button>
+                        </div>
+
+                        <label class="form-label">@L["OnDelete"]</label>
+                        <select class="input sm" @bind="state.FkOnDelete">
+                            @foreach (var action in ReferentialActions)
+                            {
+                                <option value="@action">@action.Replace('_', ' ')</option>
+                            }
+                        </select>
+
+                        <label class="form-label">@L["OnUpdate"]</label>
+                        <select class="input sm" @bind="state.FkOnUpdate">
+                            @foreach (var action in ReferentialActions)
+                            {
+                                <option value="@action">@action.Replace('_', ' ')</option>
+                            }
+                        </select>
+
+                        <div></div>
+                        <label class="check"><input type="checkbox" @bind="state.FkCheckExisting" /> @L["CheckExistingData"]</label>
+                    </div>
+                    <div class="section-actions">
+                        <button class="btn sm primary" @onclick="AddForeignKey"><Icon Name="plus" /> @L["AddForeignKey"]</button>
+                    </div>
+                </fieldset>
+                break;
+
+            case "checks":
+                <div class="grid-scroll">
+                    <table class="grid">
+                        <thead>
+                            <tr>
+                                <th>@L["Name"]</th>
+                                <th>@L["CheckExpression"]</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var check in state.Original!.Checks)
+                            {
+                                <tr>
+                                    <td class="mono"><bdi>@check.Name</bdi>@if (check.IsDisabled) { <span class="badge failed">@L["Disabled"]</span> }</td>
+                                    <td class="mono"><bdi>@check.Definition</bdi></td>
+                                    <td class="row-actions">
+                                        <button class="btn xs danger" @onclick='() => RunSql("Delete", $"ALTER TABLE {state.Original.FullName} DROP CONSTRAINT {Sql.Q(check.Name)};", danger: true)'>@L["Delete"]</button>
+                                    </td>
+                                </tr>
+                            }
+                            @if (state.Original.Checks.Count == 0)
+                            {
+                                <tr><td colspan="3" class="empty">@L["NoItems"]</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                <fieldset class="sub-form">
+                    <legend>@L["NewCheckConstraint"]</legend>
+                    <div class="form-grid">
+                        <label class="form-label">@L["Name"]</label>
+                        <input class="input sm mono" dir="ltr" @bind="state.CheckName" placeholder="@($"CK_{state.Original!.Name}")" />
+                        <label class="form-label">@L["CheckExpression"]</label>
+                        <div>
+                            <input class="input sm mono" dir="ltr" @bind="state.CheckExpression" placeholder="[Price] >= 0" />
+                            <div class="field-hint">@L["CheckExpressionHint"]</div>
+                        </div>
+                    </div>
+                    <div class="section-actions">
+                        <button class="btn sm primary" @onclick="AddCheck" disabled="@string.IsNullOrWhiteSpace(state.CheckExpression)"><Icon Name="plus" /> @L["AddCheckConstraint"]</button>
+                    </div>
+                </fieldset>
+                break;
+        }
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public TableDesignTab Tab { get; set; } = default!;
+
+    private static readonly (string Key, string Label)[] Sections =
+    [
+        ("columns", "FolderColumns"), ("indexes", "IndexesAndKeys"), ("relationships", "Relationships"), ("checks", "FolderConstraints")
+    ];
+
+    private static readonly string[] ReferentialActions = ["NO_ACTION", "CASCADE", "SET_NULL", "SET_DEFAULT"];
+
+    private sealed class DesignerState
+    {
+        public TableDefinition? Original { get; set; }
+        public string Schema { get; set; } = "dbo";
+        public string Name { get; set; } = string.Empty;
+        public List<DesignColumn> Columns { get; } = [];
+        public List<string> Schemas { get; set; } = [];
+        public List<string> Types { get; set; } = [];
+        public List<(string Schema, string Name)> Tables { get; set; } = [];
+        public string Section { get; set; } = "columns";
+        public string FkName { get; set; } = string.Empty;
+        public string FkTable { get; set; } = string.Empty;
+        public List<string> FkRefColumns { get; set; } = [];
+        public List<(string Column, string RefColumn)> FkPairs { get; } = [("", "")];
+        public string FkOnDelete { get; set; } = "NO_ACTION";
+        public string FkOnUpdate { get; set; } = "NO_ACTION";
+        public bool FkCheckExisting { get; set; } = true;
+        public string CheckName { get; set; } = string.Empty;
+        public string CheckExpression { get; set; } = string.Empty;
+    }
+
+    private DesignerState? state;
+    private bool loading;
+    private string? error;
+    private string? validation;
+
+    private bool IsNew => state?.Original is null;
+
+    private string DefaultFkName => state is null ? "" : $"FK_{state.Name}_{(state.FkTable.Contains('.') ? state.FkTable[(state.FkTable.IndexOf('.') + 1)..] : state.FkTable)}";
+
+    private static string Text(ChangeEventArgs e) => e.Value as string ?? string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Tab.State is DesignerState saved)
+            state = saved;
+        else
+            await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        loading = true;
+        error = null;
+        validation = null;
+        StateHasChanged();
+
+        try
+        {
+            var db = Tab.Database!;
+            var designer = new DesignerState
+            {
+                Schemas = await Admin.GetSchemasAsync(Tab.Server, db),
+                Tables = await Explorer.GetTableNamesAsync(Tab.Server, db)
+            };
+
+            var userTypes = await Db.QueryAsync(Tab.Server.ConnectionStringFor(db),
+                "SELECT s.name + '.' + t.name FROM sys.types t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE t.is_user_defined = 1 AND t.is_assembly_type = 0 ORDER BY 1",
+                r => r.GetString(0));
+            designer.Types = [.. ScriptBuilder.SystemTypes, .. userTypes];
+
+            if (Tab.Name is null)
+            {
+                designer.Columns.Add(new DesignColumn { Name = "Id", DataType = "int", Length = null, AllowNulls = false, IsPrimaryKey = true, IsIdentity = true });
+                designer.Columns.Add(new DesignColumn { Name = "Name", DataType = "nvarchar", Length = "100" });
+            }
+            else
+            {
+                var table = await Schema.GetTableAsync(Tab.Server, db, Tab.Schema!, Tab.Name);
+                var pk = new HashSet<string>(table.PrimaryKey?.Columns.Select(c => c.Name) ?? [], StringComparer.OrdinalIgnoreCase);
+                designer.Original = table;
+                designer.Schema = table.Schema;
+                designer.Name = table.Name;
+                designer.Columns.AddRange(table.Columns.Select(c => DesignColumn.From(c, pk.Contains(c.Name))));
+                designer.FkName = string.Empty;
+            }
+
+            if (!designer.Schemas.Contains(designer.Schema))
+                designer.Schemas.Insert(0, designer.Schema);
+
+            state = designer;
+            Tab.State = designer;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task ConfirmReloadAsync()
+    {
+        Tab.State = null;
+        await LoadAsync();
+    }
+
+    private async Task ReloadAfterChangeAsync()
+    {
+        var section = state?.Section ?? "columns";
+        Tab.State = null;
+        await LoadAsync();
+        if (state is not null)
+            state.Section = section;
+        StateHasChanged();
+    }
+
+    private void SetPrimaryKey(DesignColumn column, ChangeEventArgs e)
+    {
+        column.IsPrimaryKey = e.Value is true;
+        if (column.IsPrimaryKey)
+            column.AllowNulls = false;
+    }
+
+    private void SetType(DesignColumn column, string type)
+    {
+        column.DataType = type.Trim();
+        column.Length = ScriptBuilder.DefaultLengths.TryGetValue(column.DataType, out var length)
+            ? (column.Original?.DataType == column.DataType ? column.Original.Length : length)
+            : null;
+    }
+
+    private void SetIdentity(DesignColumn column, bool value)
+    {
+        if (value)
+            foreach (var other in state!.Columns.Where(c => c != column && c.IsNew))
+                other.IsIdentity = false;
+        column.IsIdentity = value;
+        if (value)
+            column.AllowNulls = false;
+    }
+
+    private void AddColumn() => state!.Columns.Add(new DesignColumn { Name = $"Column{state.Columns.Count + 1}" });
+
+    private void Remove(DesignColumn column)
+    {
+        if (column.IsNew)
+            state!.Columns.Remove(column);
+        else
+            column.Removed = true;
+    }
+
+    private void Move(int index, int delta)
+    {
+        var target = index + delta;
+        if (target < 0 || target >= state!.Columns.Count)
+            return;
+        (state.Columns[index], state.Columns[target]) = (state.Columns[target], state.Columns[index]);
+    }
+
+    private string? Validate()
+    {
+        var s = state!;
+        if (string.IsNullOrWhiteSpace(s.Name))
+            return L["TableNameRequired"];
+
+        var live = s.Columns.Where(c => !c.Removed).ToList();
+        if (live.Count == 0)
+            return L["ColumnsRequired"];
+        if (live.Any(c => string.IsNullOrWhiteSpace(c.Name)))
+            return L["ColumnNameRequired"];
+        if (live.GroupBy(c => c.Name.Trim(), StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1) is { } duplicate)
+            return string.Format(L["DuplicateColumn"], duplicate.Key);
+        if (live.Any(c => !c.IsComputed && string.IsNullOrWhiteSpace(c.DataType)))
+            return L["DataTypeRequired"];
+        if (live.Count(c => c.IsIdentity) > 1)
+            return L["OneIdentity"];
+        if (live.FirstOrDefault(c => c.IsIdentity && c.IsNew && c.DataType.ToLowerInvariant() is not ("int" or "bigint" or "smallint" or "tinyint" or "decimal" or "numeric")) is { } badIdentity)
+            return string.Format(L["IdentityType"], badIdentity.Name);
+        return null;
+    }
+
+    private string BuildSql()
+    {
+        var s = state!;
+        return s.Original is null
+            ? ScriptBuilder.CreateTableFromDesign(s.Schema, s.Name.Trim(), s.Columns)
+            : ScriptBuilder.AlterTableFromDesign(s.Original, s.Schema, s.Name.Trim(), s.Columns);
+    }
+
+    private void ScriptChanges()
+    {
+        validation = Validate();
+        if (validation is not null)
+            return;
+        var sql = BuildSql();
+        if (string.IsNullOrEmpty(sql))
+        {
+            Session.Toast(L["NoChanges"], ToastKind.Info);
+            return;
+        }
+
+        OpenScript(sql);
+    }
+
+    private void Save()
+    {
+        validation = Validate();
+        if (validation is not null)
+            return;
+
+        var sql = BuildSql();
+        if (string.IsNullOrEmpty(sql))
+        {
+            Session.Toast(L["NoChanges"], ToastKind.Info);
+            return;
+        }
+
+        var schema = state!.Schema;
+        var name = state.Name.Trim();
+        Actions.ShowAction(new ActionRequest
+        {
+            TitleKey = IsNew ? "CreateTable" : "SaveTableChanges",
+            Subject = $"{schema}.{name}",
+            MessageKey = IsNew ? null : "SaveChangesHint",
+            Server = Tab.Server,
+            Database = Tab.Database,
+            BuildSql = (_, _) => sql,
+            ConfirmKey = "Save",
+            ShowSql = true,
+            OnSuccess = async () =>
+            {
+                Tab.Schema = schema;
+                Tab.Name = name;
+                await ReloadAfterChangeAsync();
+                await Session.RefreshWhereAsync(n => n.Kind == NodeKind.TablesFolder && n.Server == Tab.Server && n.Database == Tab.Database);
+                Session.Notify();
+            }
+        });
+    }
+
+    private void OpenScript(string sql) => Session.OpenQuery(Tab.Server, Tab.Database, sql);
+
+    private void RunSql(string titleKey, string sql, bool danger = false) => Actions.ShowAction(new ActionRequest
+    {
+        TitleKey = titleKey,
+        Subject = state?.Original?.FullName,
+        Server = Tab.Server,
+        Database = Tab.Database,
+        BuildSql = (_, _) => sql,
+        Danger = danger,
+        ConfirmKey = danger ? "Delete" : "Execute",
+        ShowSql = true,
+        OnSuccess = ReloadAfterChangeAsync
+    });
+
+    private void NewIndex() => Session.ShowDialog(typeof(IndexDialog), new Dictionary<string, object>
+    {
+        ["Server"] = Tab.Server,
+        ["Database"] = Tab.Database!,
+        ["Schema"] = state!.Original!.Schema,
+        ["Table"] = state.Original.Name,
+        ["OnSuccess"] = (Func<Task>)ReloadAfterChangeAsync
+    });
+
+    private async Task SelectReferencedTableAsync(string table)
+    {
+        var s = state!;
+        s.FkTable = table;
+        s.FkRefColumns = [];
+        if (string.IsNullOrEmpty(table))
+            return;
+
+        var dot = table.IndexOf('.');
+        try
+        {
+            s.FkRefColumns = await Schema.GetColumnNamesAsync(Tab.Server, Tab.Database!, Sql.Q(table[..dot], table[(dot + 1)..]));
+        }
+        catch (Exception ex)
+        {
+            Session.Toast(ex.Message, ToastKind.Error);
+        }
+    }
+
+    private void AddForeignKey()
+    {
+        var s = state!;
+        var pairs = s.FkPairs.Where(p => !string.IsNullOrEmpty(p.Column) && !string.IsNullOrEmpty(p.RefColumn)).ToList();
+        if (string.IsNullOrEmpty(s.FkTable) || pairs.Count == 0)
+        {
+            validation = L["ForeignKeyIncomplete"];
+            return;
+        }
+
+        validation = null;
+        var dot = s.FkTable.IndexOf('.');
+        var fk = new ForeignKeyDefinition
+        {
+            Name = string.IsNullOrWhiteSpace(s.FkName) ? DefaultFkName : s.FkName.Trim(),
+            ReferencedSchema = s.FkTable[..dot],
+            ReferencedTable = s.FkTable[(dot + 1)..],
+            DeleteAction = s.FkOnDelete,
+            UpdateAction = s.FkOnUpdate,
+            IsNotTrusted = !s.FkCheckExisting
+        };
+        fk.Columns.AddRange(pairs.Select(p => p.Column));
+        fk.ReferencedColumns.AddRange(pairs.Select(p => p.RefColumn));
+        RunSql("AddForeignKey", ScriptBuilder.AddForeignKey(s.Original!.FullName, fk));
+    }
+
+    private void AddCheck()
+    {
+        var s = state!;
+        var name = string.IsNullOrWhiteSpace(s.CheckName) ? $"CK_{s.Original!.Name}" : s.CheckName.Trim();
+        RunSql("AddCheckConstraint", ScriptBuilder.AddCheck(s.Original!.FullName, new CheckDefinition(name, s.CheckExpression, false)));
+    }
+}

@@ -1,0 +1,299 @@
+@using System.Text
+@inherits SqlDialogBase
+@inject AdminService Admin
+
+<ModalFrame Title="@L["RestoreDatabase"]" Subject="@Server.DisplayName" IconName="backup" Size="xl" Busy="@Run.IsRunning" OnClose="Close">
+    <ChildContent>
+        @if (browsing)
+        {
+            <ServerFileBrowser Server="Server" Mode="FileBrowserMode.Open" InitialPath="@(string.IsNullOrEmpty(device) ? paths?.Backup : device)"
+                               Extensions='new[] { ".bak", ".trn", ".bck" }' OnPick="PickAsync" OnCancel="() => browsing = false" />
+        }
+        else
+        {
+            <div class="form-grid">
+                <label class="form-label" for="rs-dev">@L["BackupFile"] *</label>
+                <div class="path-cell">
+                    <input id="rs-dev" class="input mono" dir="ltr" @bind="device" @bind:event="oninput" placeholder="C:\Backup\MyDb.bak" disabled="@Run.IsRunning" />
+                    <button class="btn sm" @onclick="() => browsing = true" disabled="@Run.IsRunning">@L["Browse"]</button>
+                    <button class="btn sm" @onclick="ReadAsync" disabled="@(Run.IsRunning || reading || string.IsNullOrWhiteSpace(device))">@(reading ? L["Loading"] : L["ReadBackup"])</button>
+                </div>
+            </div>
+
+            @if (readError is not null)
+            {
+                <div class="status error"><bdi>@readError</bdi></div>
+            }
+
+            @if (sets.Count > 0)
+            {
+                <h3 class="section-title">@L["BackupSetsToRestore"]</h3>
+                <div class="grid-scroll short">
+                    <table class="grid">
+                        <thead>
+                            <tr>
+                                <th class="check"></th>
+                                <th class="num">#</th>
+                                <th>@L["Name"]</th>
+                                <th>@L["Type"]</th>
+                                <th>@L["Database"]</th>
+                                <th>@L["Server"]</th>
+                                <th>@L["Finished"]</th>
+                                <th class="num">@L["SizeMb"]</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var set in sets)
+                            {
+                                <tr class="@(selected.Contains(set.Position) ? "selected" : null)">
+                                    <td class="check"><input type="checkbox" checked="@selected.Contains(set.Position)" @onchange="e => ToggleSetAsync(set, e.Value is true)" /></td>
+                                    <td class="num">@set.Position</td>
+                                    <td><bdi>@set.Name</bdi></td>
+                                    <td>@L[set.TypeKey]@(set.IsCopyOnly ? " (copy-only)" : "")</td>
+                                    <td class="mono"><bdi>@set.DatabaseName</bdi></td>
+                                    <td class="mono small"><bdi>@set.ServerName</bdi></td>
+                                    <td><bdi>@set.Finish?.ToString("yyyy-MM-dd HH:mm:ss")</bdi></td>
+                                    <td class="num">@set.SizeMb.ToString("N2")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="form-grid">
+                    <label class="form-label" for="rs-target">@L["RestoreAs"] *</label>
+                    <input id="rs-target" class="input mono" dir="ltr" value="@target" @onchange="e => SetTargetAsync(e.Value as string)" disabled="@Run.IsRunning" />
+
+                    <div></div>
+                    <div class="check-list">
+                        <label class="check"><input type="checkbox" @bind="replace" disabled="@Run.IsRunning" /> @L["OverwriteExisting"]</label>
+                        <label class="check"><input type="checkbox" @bind="closeConnections" disabled="@Run.IsRunning" /> @L["CloseConnections"]</label>
+                        <label class="check"><input type="checkbox" @bind="noRecovery" disabled="@Run.IsRunning" /> @L["LeaveRestoring"]</label>
+                    </div>
+                </div>
+
+                @if (files.Count > 0)
+                {
+                    <h3 class="section-title">@L["RestoreFilesAs"]</h3>
+                    <div class="grid-scroll short">
+                        <table class="grid">
+                            <thead>
+                                <tr>
+                                    <th>@L["LogicalName"]</th>
+                                    <th>@L["FileType"]</th>
+                                    <th>@L["OriginalPath"]</th>
+                                    <th>@L["RestoreTo"]</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var file in files)
+                                {
+                                    <tr>
+                                        <td class="mono"><bdi>@file.LogicalName</bdi></td>
+                                        <td>@(file.Type == "L" ? "LOG" : "ROWS")</td>
+                                        <td class="mono small muted"><bdi>@file.PhysicalName</bdi></td>
+                                        <td><input class="cell mono" dir="ltr" value="@moves[file.LogicalName]" @onchange="e => moves[file.LogicalName] = e.Value as string ?? string.Empty" /></td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            }
+
+            @if (Error is not null)
+            {
+                <div class="status error">@Error</div>
+            }
+
+            <SqlPreview Sql="@BuildSql()" />
+            <RunLog Run="Run" />
+        }
+    </ChildContent>
+    <Footer>
+        <button class="btn" @onclick="() => ScriptToQuery(Server, null, BuildSql())" disabled="@(Run.IsRunning || !IsValid)"><Icon Name="query" /> @L["ScriptToNewQuery"]</button>
+        <span class="spacer"></span>
+        @if (Run.IsRunning)
+        {
+            <button class="btn" @onclick="Run.Cancel">@L["Stop"]</button>
+        }
+        else if (Run.Succeeded)
+        {
+            <button class="btn primary" @onclick="Close">@L["Close"]</button>
+        }
+        else
+        {
+            <button class="btn" @onclick="Close">@L["Cancel"]</button>
+            <button class="btn primary" @onclick="RestoreAsync" disabled="@(!IsValid)">@L["Restore"]</button>
+        }
+    </Footer>
+</ModalFrame>
+
+@code {
+    [Parameter, EditorRequired] public ManagedServer Server { get; set; } = default!;
+
+    /// <summary>Database to restore over (from its context menu); empty for a new one.</summary>
+    [Parameter] public string Database { get; set; } = string.Empty;
+
+    private DefaultPaths? paths;
+    private string device = string.Empty;
+    private bool browsing;
+    private bool reading;
+    private string? readError;
+    private List<BackupSet> sets = [];
+    private readonly SortedSet<int> selected = [];
+    private List<BackupFile> files = [];
+    private readonly Dictionary<string, string> moves = new(StringComparer.OrdinalIgnoreCase);
+    private string target = string.Empty;
+    private bool targetExists;
+    private bool replace;
+    private bool closeConnections = true;
+    private bool noRecovery;
+
+    private bool IsValid => selected.Count > 0 && !string.IsNullOrWhiteSpace(target) && !string.IsNullOrWhiteSpace(device);
+
+    protected override async Task OnInitializedAsync()
+    {
+        target = Database;
+        try
+        {
+            paths = await Admin.GetDefaultPathsAsync(Server);
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+    }
+
+    private async Task PickAsync(string file)
+    {
+        device = file;
+        browsing = false;
+        await ReadAsync();
+    }
+
+    private async Task ReadAsync()
+    {
+        reading = true;
+        readError = null;
+        sets = [];
+        files = [];
+        selected.Clear();
+        StateHasChanged();
+
+        try
+        {
+            sets = await Admin.ReadBackupHeaderAsync(Server, device.Trim());
+            // Default: the last full backup and the differential/log backups after it
+            var lastFull = sets.LastOrDefault(s => s.Type == 1);
+            if (lastFull is not null)
+            {
+                selected.Add(lastFull.Position);
+                var lastDiff = sets.LastOrDefault(s => s.Type == 5 && s.Position > lastFull.Position);
+                if (lastDiff is not null)
+                    selected.Add(lastDiff.Position);
+                foreach (var log in sets.Where(s => s.Type == 2 && s.Position > (lastDiff ?? lastFull).Position))
+                    selected.Add(log.Position);
+            }
+
+            if (string.IsNullOrWhiteSpace(target))
+                target = (lastFull ?? sets.FirstOrDefault())?.DatabaseName ?? string.Empty;
+            await LoadFilesAsync();
+        }
+        catch (Exception ex)
+        {
+            readError = ex.Message;
+        }
+        finally
+        {
+            reading = false;
+        }
+    }
+
+    private async Task ToggleSetAsync(BackupSet set, bool on)
+    {
+        if (on)
+            selected.Add(set.Position);
+        else
+            selected.Remove(set.Position);
+        await LoadFilesAsync();
+    }
+
+    private async Task LoadFilesAsync()
+    {
+        var first = sets.FirstOrDefault(s => selected.Contains(s.Position) && s.Type != 2) ?? sets.FirstOrDefault(s => selected.Contains(s.Position));
+        files = first is null ? [] : await Admin.ReadBackupFilesAsync(Server, device.Trim(), first.Position);
+        await CheckTargetAsync();
+        UpdateMoves();
+    }
+
+    private async Task CheckTargetAsync()
+    {
+        targetExists = !string.IsNullOrWhiteSpace(target) &&
+                       await Db.ScalarAsync(Server.Master, "SELECT DB_ID(@db)", ("@db", target.Trim())) is not null;
+        replace = targetExists;
+        closeConnections = targetExists;
+    }
+
+    private async Task SetTargetAsync(string? value)
+    {
+        target = value?.Trim() ?? string.Empty;
+        await CheckTargetAsync();
+        UpdateMoves();
+    }
+
+    /// <summary>Files go to the server's default data and log folders, named after the target database.</summary>
+    private void UpdateMoves()
+    {
+        moves.Clear();
+        var data = 0;
+        foreach (var file in files)
+        {
+            var folder = file.Type == "L" ? paths?.Log : paths?.Data;
+            var extension = file.Type == "L" ? "_log.ldf" : data++ == 0 ? ".mdf" : $"_{data}.ndf";
+            moves[file.LogicalName] = string.IsNullOrEmpty(folder) ? file.PhysicalName : $"{folder}{target}{extension}";
+        }
+    }
+
+    private string BuildSql()
+    {
+        if (!IsValid)
+            return string.Empty;
+
+        var db = Sql.Q(target);
+        var dev = Sql.Lit(device.Trim());
+        var chosen = sets.Where(s => selected.Contains(s.Position)).OrderBy(s => s.Position).ToList();
+        var sb = new StringBuilder();
+        if (closeConnections && targetExists)
+            sb.Append($"ALTER DATABASE {db} SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\nGO\n");
+
+        for (var i = 0; i < chosen.Count; i++)
+        {
+            var set = chosen[i];
+            var last = i == chosen.Count - 1;
+            var options = new List<string> { $"FILE = {set.Position}" };
+            if (i == 0)
+            {
+                options.AddRange(files.Select(f => $"MOVE {Sql.Lit(f.LogicalName)} TO {Sql.Lit(moves.GetValueOrDefault(f.LogicalName, f.PhysicalName))}"));
+                if (replace)
+                    options.Add("REPLACE");
+            }
+
+            options.Add(last && !noRecovery ? "RECOVERY" : "NORECOVERY");
+            options.Add("STATS = 5");
+            sb.Append($"RESTORE {(set.Type == 2 ? "LOG" : "DATABASE")} {db} FROM DISK = {dev}\nWITH {string.Join(",\n     ", options)};\nGO\n");
+        }
+
+        if (closeConnections && targetExists && !noRecovery)
+            sb.Append($"ALTER DATABASE {db} SET MULTI_USER;\nGO\n");
+        return sb.ToString();
+    }
+
+    private async Task RestoreAsync()
+    {
+        var ok = await RunSqlAsync(Server, "master", BuildSql(), release: target);
+        await Session.RefreshWhereAsync(n => n.Server == Server && n.Kind == NodeKind.DatabasesFolder);
+        if (ok)
+            Session.Toast(L["RestoreCompleted"]);
+    }
+}

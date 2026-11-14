@@ -1,0 +1,516 @@
+@using System.Globalization
+@inherits LocalizedComponentBase
+@inject ManagerSession Session
+@inject ManagerActions Actions
+@inject AdminService Admin
+
+<div class="view">
+    <div class="view-head">
+        <div class="view-title">
+            <Icon Name="database" />
+            <h2>@L["DatabaseProperties"]</h2>
+            <bdi class="mono muted">@Tab.Server.DisplayName / @Tab.Database</bdi>
+        </div>
+        <div class="view-actions">
+            <button class="btn sm" @onclick="LoadAsync" disabled="@loading"><Icon Name="refresh" /> @L["Refresh"]</button>
+            <button class="btn sm" @onclick="() => Session.OpenQuery(Tab.Server, Tab.Database)"><Icon Name="query" /> @L["NewQuery"]</button>
+            <button class="btn sm" @onclick="Backup"><Icon Name="backup" /> @L["BackUp"]</button>
+        </div>
+    </div>
+
+    @if (loading && original is null)
+    {
+        <div class="empty">@L["Loading"]</div>
+    }
+    else if (error is not null)
+    {
+        <div class="status error"><bdi>@error</bdi></div>
+    }
+    else if (original is not null && edit is not null)
+    {
+        <div class="props-layout">
+            <nav class="props-nav">
+                @foreach (var (key, label) in Pages)
+                {
+                    <button class="props-nav-item @(page == key ? "active" : null)" @onclick="() => OpenPageAsync(key)">@L[label]</button>
+                }
+            </nav>
+
+            <div class="props-body">
+                @switch (page)
+                {
+                    case "general":
+                        <div class="tiles">
+                            <div class="stat"><div class="stat-value">@Mb(original.SizeMb) MB</div><div class="stat-label">@L["Size"]</div></div>
+                            <div class="stat"><div class="stat-value">@Mb(SpaceAvailable) MB</div><div class="stat-label">@L["SpaceAvailable"]</div></div>
+                            <div class="stat"><div class="stat-value">@original.Users</div><div class="stat-label">@L["FolderUsers"]</div></div>
+                            <div class="stat"><div class="stat-value">@original.Files.Count</div><div class="stat-label">@L["Files"]</div></div>
+                        </div>
+                        <dl class="facts-list">
+                            <dt>@L["Name"]</dt><dd><bdi class="mono">@original.Name</bdi></dd>
+                            <dt>@L["Status"]</dt><dd><span class="badge @(original.State == "ONLINE" ? "both" : "missing")">@original.State</span> <span class="muted">@original.UserAccess @(original.IsReadOnly ? "· READ_ONLY" : "")</span></dd>
+                            <dt>@L["Owner"]</dt><dd><bdi>@original.Owner</bdi></dd>
+                            <dt>@L["Created"]</dt><dd><bdi>@original.Created?.ToString("yyyy-MM-dd HH:mm:ss")</bdi></dd>
+                            <dt>@L["RecoveryModel"]</dt><dd>@original.RecoveryModel</dd>
+                            <dt>@L["CompatibilityLevel"]</dt><dd>@original.CompatibilityLevel</dd>
+                            <dt>@L["Collation"]</dt><dd><bdi class="mono">@original.Collation</bdi></dd>
+                            <dt>@L["LastFullBackup"]</dt><dd><bdi>@(original.LastFullBackup?.ToString("yyyy-MM-dd HH:mm:ss") ?? L["Never"])</bdi></dd>
+                            <dt>@L["LastLogBackup"]</dt><dd><bdi>@(original.LastLogBackup?.ToString("yyyy-MM-dd HH:mm:ss") ?? L["Never"])</bdi></dd>
+                        </dl>
+                        break;
+
+                    case "files":
+                        <div class="grid-scroll">
+                            <table class="grid">
+                                <thead>
+                                    <tr>
+                                        <th>@L["LogicalName"]</th>
+                                        <th>@L["FileType"]</th>
+                                        <th>@L["FileGroup"]</th>
+                                        <th class="num">@L["SizeMb"]</th>
+                                        <th class="num">@L["UsedMb"]</th>
+                                        <th>@L["Autogrowth"]</th>
+                                        <th>@L["MaxSize"]</th>
+                                        <th>@L["Path"]</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var file in files)
+                                    {
+                                        <tr>
+                                            <td class="mono"><bdi>@file.File.Name</bdi></td>
+                                            <td>@file.File.Type</td>
+                                            <td class="mono">@file.File.FileGroup</td>
+                                            <td class="num"><input class="cell mono narrow num" type="number" min="@Mb(file.File.SizeMb)" step="1" @bind="file.SizeMb" /></td>
+                                            <td class="num">@(file.File.UsedMb is { } used ? Mb(used) : "—")</td>
+                                            <td class="growth">
+                                                <input class="cell mono tiny" type="number" min="0" @bind="file.Growth" />
+                                                <select class="cell tiny" @bind="file.Percent">
+                                                    <option value="false">MB</option>
+                                                    <option value="true">%</option>
+                                                </select>
+                                            </td>
+                                            <td class="growth">
+                                                <label class="check"><input type="checkbox" @bind="file.Unlimited" /> ∞</label>
+                                                @if (!file.Unlimited)
+                                                {
+                                                    <input class="cell mono narrow" type="number" min="1" @bind="file.MaxMb" />
+                                                }
+                                            </td>
+                                            <td class="mono small path"><bdi>@file.File.PhysicalName</bdi></td>
+                                            <td class="row-actions">
+                                                <button class="btn xs" @onclick="() => ShrinkFile(file.File)">@L["Shrink"]</button>
+                                                @if (file.File.FileId != 1 && file.File.FileId != 2)
+                                                {
+                                                    <button class="btn xs danger" @onclick="() => RemoveFile(file.File)">@L["Delete"]</button>
+                                                }
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <fieldset class="sub-form">
+                            <legend>@L["AddFile"]</legend>
+                            <div class="form-grid">
+                                <label class="form-label">@L["LogicalName"]</label>
+                                <input class="input sm mono" dir="ltr" @bind="newFile.Name" />
+                                <label class="form-label">@L["FileType"]</label>
+                                <select class="input sm" @bind="newFile.IsLog">
+                                    <option value="false">ROWS</option>
+                                    <option value="true">LOG</option>
+                                </select>
+                                <label class="form-label">@L["Path"]</label>
+                                <input class="input sm mono" dir="ltr" @bind="newFile.Path" placeholder="@DefaultFilePath" />
+                                <label class="form-label">@L["SizeMb"]</label>
+                                <input class="input sm mono narrow" type="number" min="1" @bind="newFile.SizeMb" />
+                            </div>
+                        </fieldset>
+
+                        <div class="section-actions">
+                            <button class="btn sm primary" @onclick="SaveFiles"><Icon Name="save" /> @L["SaveChanges"]</button>
+                        </div>
+                        break;
+
+                    case "options":
+                        <div class="form-grid wide">
+                            <label class="form-label">@L["Owner"]</label>
+                            <select class="input sm mono" dir="ltr" @bind="edit.Owner">
+                                @if (edit.Owner is not null && !logins.Contains(edit.Owner))
+                                {
+                                    <option value="@edit.Owner">@edit.Owner</option>
+                                }
+                                @foreach (var login in logins)
+                                {
+                                    <option value="@login">@login</option>
+                                }
+                            </select>
+
+                            <label class="form-label">@L["Collation"]</label>
+                            <div>
+                                <input class="input sm mono" dir="ltr" list="coll-@Tab.Id" @bind="edit.Collation" @bind:event="oninput" @bind:after="SuggestCollationsAsync" />
+                                <datalist id="coll-@Tab.Id">
+                                    @foreach (var collation in collations)
+                                    {
+                                        <option value="@collation"></option>
+                                    }
+                                </datalist>
+                                <div class="field-hint">@L["CollationChangeHint"]</div>
+                            </div>
+
+                            <label class="form-label">@L["RecoveryModel"]</label>
+                            <select class="input sm" @bind="edit.RecoveryModel">
+                                <option value="FULL">FULL</option>
+                                <option value="BULK_LOGGED">BULK_LOGGED</option>
+                                <option value="SIMPLE">SIMPLE</option>
+                            </select>
+
+                            <label class="form-label">@L["CompatibilityLevel"]</label>
+                            <select class="input sm" @bind="edit.CompatibilityLevel">
+                                @foreach (var (level, label) in AdminService.CompatibilityLevels(Tab.Server))
+                                {
+                                    <option value="@level">@label</option>
+                                }
+                                @if (!AdminService.CompatibilityLevels(Tab.Server).Any(l => l.Level == edit.CompatibilityLevel))
+                                {
+                                    <option value="@edit.CompatibilityLevel">@edit.CompatibilityLevel</option>
+                                }
+                            </select>
+
+                            <label class="form-label">@L["RestrictAccess"]</label>
+                            <select class="input sm" @bind="edit.UserAccess">
+                                <option value="MULTI_USER">MULTI_USER</option>
+                                <option value="SINGLE_USER">SINGLE_USER</option>
+                                <option value="RESTRICTED_USER">RESTRICTED_USER</option>
+                            </select>
+
+                            <label class="form-label">@L["PageVerify"]</label>
+                            <select class="input sm" @bind="edit.PageVerify">
+                                <option value="CHECKSUM">CHECKSUM</option>
+                                <option value="TORN_PAGE_DETECTION">TORN_PAGE_DETECTION</option>
+                                <option value="NONE">NONE</option>
+                            </select>
+
+                            <div></div>
+                            <div class="check-list">
+                                <label class="check"><input type="checkbox" @bind="edit.IsReadOnly" /> @L["ReadOnlyDatabase"]</label>
+                                <label class="check"><input type="checkbox" @bind="edit.AutoClose" /> AUTO_CLOSE</label>
+                                <label class="check"><input type="checkbox" @bind="edit.AutoShrink" /> AUTO_SHRINK</label>
+                                <label class="check"><input type="checkbox" @bind="edit.AutoCreateStats" /> AUTO_CREATE_STATISTICS</label>
+                                <label class="check"><input type="checkbox" @bind="edit.AutoUpdateStats" /> AUTO_UPDATE_STATISTICS</label>
+                                <label class="check"><input type="checkbox" @bind="edit.AllowSnapshotIsolation" /> ALLOW_SNAPSHOT_ISOLATION</label>
+                                <label class="check"><input type="checkbox" @bind="edit.ReadCommittedSnapshot" /> READ_COMMITTED_SNAPSHOT</label>
+                            </div>
+                        </div>
+                        <div class="section-actions">
+                            <button class="btn sm primary" @onclick="SaveOptions"><Icon Name="save" /> @L["SaveChanges"]</button>
+                        </div>
+                        break;
+
+                    case "usage":
+                        @if (sizes is null)
+                        {
+                            <div class="empty">@(sizesError ?? L["Loading"])</div>
+                        }
+                        else
+                        {
+                            <div class="tiles">
+                                <div class="stat"><div class="stat-value">@sizes.Count</div><div class="stat-label">@L["FolderTables"]</div></div>
+                                <div class="stat"><div class="stat-value">@sizes.Sum(s => s.Rows).ToString("N0")</div><div class="stat-label">@L["RowsCount"]</div></div>
+                                <div class="stat"><div class="stat-value">@Kb(sizes.Sum(s => s.ReservedKb))</div><div class="stat-label">@L["Reserved"]</div></div>
+                                <div class="stat"><div class="stat-value">@Kb(sizes.Sum(s => s.IndexKb))</div><div class="stat-label">@L["IndexSize"]</div></div>
+                            </div>
+                            <div class="grid-scroll">
+                                <table class="grid">
+                                    <thead>
+                                        <tr>
+                                            <th>@L["ColTable"]</th>
+                                            <th class="num">@L["ColRows"]</th>
+                                            <th class="num">@L["Reserved"]</th>
+                                            <th class="num">@L["DataSize"]</th>
+                                            <th class="num">@L["IndexSize"]</th>
+                                            <th class="num">@L["Unused"]</th>
+                                            <th>@L["Share"]</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @{
+                                            var total = Math.Max(sizes.Sum(s => s.ReservedKb), 1);
+                                        }
+                                        @foreach (var size in sizes)
+                                        {
+                                            <tr>
+                                                <td class="mono"><bdi>@($"{size.Schema}.{size.Name}")</bdi></td>
+                                                <td class="num">@size.Rows.ToString("N0")</td>
+                                                <td class="num">@Kb(size.ReservedKb)</td>
+                                                <td class="num">@Kb(size.DataKb)</td>
+                                                <td class="num">@Kb(size.IndexKb)</td>
+                                                <td class="num">@Kb(size.UnusedKb)</td>
+                                                <td class="share"><span class="bar" style="width: @((size.ReservedKb * 100.0 / total).ToString("0.#", CultureInfo.InvariantCulture))%"></span></td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                        break;
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public DatabasePropertiesTab Tab { get; set; } = default!;
+
+    private static readonly (string Key, string Label)[] Pages =
+    [
+        ("general", "General"), ("files", "Files"), ("options", "Options"), ("usage", "DiskUsage")
+    ];
+
+    private sealed class FileEdit(DatabaseFile file)
+    {
+        public DatabaseFile File { get; } = file;
+        public decimal SizeMb { get; set; } = Math.Ceiling(file.SizeMb);
+        public int Growth { get; set; } = file.IsPercentGrowth ? file.Growth : (int)Math.Round(file.Growth * 8 / 1024m);
+        public bool Percent { get; set; } = file.IsPercentGrowth;
+        public bool Unlimited { get; set; } = file.IsUnlimited;
+        public decimal MaxMb { get; set; } = file.IsUnlimited ? 0 : Math.Round(file.MaxSize * 8 / 1024m);
+    }
+
+    private sealed class NewFile
+    {
+        public string Name { get; set; } = string.Empty;
+        public bool IsLog { get; set; }
+        public string Path { get; set; } = string.Empty;
+        public int SizeMb { get; set; } = 8;
+    }
+
+    private DatabaseProperties? original;
+    private DatabaseProperties? edit;
+    private List<FileEdit> files = [];
+    private NewFile newFile = new();
+    private List<string> logins = [];
+    private List<string> collations = [];
+    private List<TableSize>? sizes;
+    private string? sizesError;
+    private string page = "general";
+    private bool loading;
+    private string? error;
+
+    private string Db => Tab.Database!;
+
+    private decimal SpaceAvailable => original?.Files.Where(f => f.UsedMb is not null).Sum(f => f.SizeMb - f.UsedMb!.Value) ?? 0;
+
+    private string DefaultFilePath
+    {
+        get
+        {
+            var primary = original?.Files.FirstOrDefault(f => f.FileId == (newFile.IsLog ? 2 : 1))?.PhysicalName ?? string.Empty;
+            var name = string.IsNullOrWhiteSpace(newFile.Name) ? $"{Db}_2" : newFile.Name.Trim();
+            return AdminService.DirectoryOf(primary) + name + (newFile.IsLog ? ".ldf" : ".ndf");
+        }
+    }
+
+    private static string Kb(long kb) => kb >= 1024 * 1024 ? $"{kb / 1024m / 1024m:N2} GB" : kb >= 1024 ? $"{kb / 1024m:N2} MB" : $"{kb:N0} KB";
+
+    private static string Mb(decimal value) => value.ToString("N2");
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        loading = true;
+        error = null;
+        StateHasChanged();
+        try
+        {
+            original = await Admin.GetDatabasePropertiesAsync(Tab.Server, Db);
+            edit = original.Clone();
+            files = original.Files.Select(f => new FileEdit(f)).ToList();
+            newFile = new NewFile();
+            logins = await Admin.GetLoginNamesAsync(Tab.Server);
+            collations = await Admin.GetCollationsAsync(Tab.Server, original.Collation?.Split('_')[0] ?? "");
+            sizes = null;
+            if (page == "usage")
+                await LoadSizesAsync();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task OpenPageAsync(string key)
+    {
+        page = key;
+        if (key == "usage" && sizes is null)
+            await LoadSizesAsync();
+    }
+
+    private async Task LoadSizesAsync()
+    {
+        sizesError = null;
+        try
+        {
+            sizes = await Admin.GetTableSizesAsync(Tab.Server, Db);
+        }
+        catch (Exception ex)
+        {
+            sizesError = ex.Message;
+        }
+    }
+
+    private async Task SuggestCollationsAsync()
+    {
+        if (edit?.Collation is { Length: >= 2 } text)
+        {
+            try
+            {
+                collations = await Admin.GetCollationsAsync(Tab.Server, text);
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
+    private void Backup() => Session.ShowDialog(typeof(BackupDialog), new Dictionary<string, object> { ["Server"] = Tab.Server, ["Database"] = Db });
+
+    private void Run(string titleKey, string sql, bool danger = false) => Actions.ShowAction(new ActionRequest
+    {
+        TitleKey = titleKey,
+        Subject = Db,
+        Server = Tab.Server,
+        Database = "master",
+        ReleaseDatabase = Db,
+        BuildSql = (_, _) => sql,
+        Danger = danger,
+        ConfirmKey = danger ? "Delete" : "Save",
+        ShowSql = true,
+        OnSuccess = LoadAsync
+    });
+
+    private void SaveOptions()
+    {
+        var o = original!;
+        var e = edit!;
+        var db = Sql.Q(Db);
+        static string OnOff(bool value) => value ? "ON" : "OFF";
+        var first = new List<string>();
+        var statements = new List<string>();
+        var last = new List<string>();
+
+        if (e.IsReadOnly != o.IsReadOnly)
+            (e.IsReadOnly ? last : first).Add($"ALTER DATABASE {db} SET {(e.IsReadOnly ? "READ_ONLY" : "READ_WRITE")} WITH ROLLBACK IMMEDIATE;");
+        if (!string.Equals(e.Owner, o.Owner, StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(e.Owner))
+            statements.Add($"ALTER AUTHORIZATION ON DATABASE::{db} TO {Sql.Q(e.Owner)};");
+        if (e.RecoveryModel != o.RecoveryModel)
+            statements.Add($"ALTER DATABASE {db} SET RECOVERY {e.RecoveryModel};");
+        if (e.CompatibilityLevel != o.CompatibilityLevel)
+            statements.Add($"ALTER DATABASE {db} SET COMPATIBILITY_LEVEL = {e.CompatibilityLevel};");
+        if (e.PageVerify != o.PageVerify)
+            statements.Add($"ALTER DATABASE {db} SET PAGE_VERIFY {e.PageVerify};");
+        if (e.AutoClose != o.AutoClose)
+            statements.Add($"ALTER DATABASE {db} SET AUTO_CLOSE {OnOff(e.AutoClose)};");
+        if (e.AutoShrink != o.AutoShrink)
+            statements.Add($"ALTER DATABASE {db} SET AUTO_SHRINK {OnOff(e.AutoShrink)};");
+        if (e.AutoCreateStats != o.AutoCreateStats)
+            statements.Add($"ALTER DATABASE {db} SET AUTO_CREATE_STATISTICS {OnOff(e.AutoCreateStats)};");
+        if (e.AutoUpdateStats != o.AutoUpdateStats)
+            statements.Add($"ALTER DATABASE {db} SET AUTO_UPDATE_STATISTICS {OnOff(e.AutoUpdateStats)};");
+        if (e.AllowSnapshotIsolation != o.AllowSnapshotIsolation)
+            statements.Add($"ALTER DATABASE {db} SET ALLOW_SNAPSHOT_ISOLATION {OnOff(e.AllowSnapshotIsolation)};");
+        if (e.ReadCommittedSnapshot != o.ReadCommittedSnapshot)
+            statements.Add($"ALTER DATABASE {db} SET READ_COMMITTED_SNAPSHOT {OnOff(e.ReadCommittedSnapshot)} WITH ROLLBACK IMMEDIATE;");
+
+        var collation = e.Collation?.Trim();
+        if (!string.IsNullOrEmpty(collation) && !string.Equals(collation, o.Collation, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!System.Text.RegularExpressions.Regex.IsMatch(collation, "^[A-Za-z0-9_]+$"))
+            {
+                Session.Toast(L["InvalidCollation"], ToastKind.Error);
+                return;
+            }
+
+            // Changing the collation needs exclusive access
+            statements.Add($"ALTER DATABASE {db} SET SINGLE_USER WITH ROLLBACK IMMEDIATE;");
+            statements.Add($"ALTER DATABASE {db} COLLATE {collation};");
+            if (e.UserAccess == o.UserAccess)
+                statements.Add($"ALTER DATABASE {db} SET {o.UserAccess};");
+        }
+
+        if (e.UserAccess != o.UserAccess)
+            last.Add($"ALTER DATABASE {db} SET {e.UserAccess} WITH ROLLBACK IMMEDIATE;");
+
+        var all = first.Concat(statements).Concat(last).ToList();
+        if (all.Count == 0)
+        {
+            Session.Toast(L["NoChanges"], ToastKind.Info);
+            return;
+        }
+
+        Run("SaveDatabaseOptions", string.Join("\nGO\n", all));
+    }
+
+    private void SaveFiles()
+    {
+        var db = Sql.Q(Db);
+        var statements = new List<string>();
+        foreach (var file in files)
+        {
+            var f = file.File;
+            var name = Sql.Lit(f.Name);
+            if (file.SizeMb > Math.Ceiling(f.SizeMb))
+                statements.Add($"ALTER DATABASE {db} MODIFY FILE (NAME = {name}, SIZE = {file.SizeMb:0}MB);");
+
+            var growthPages = f.IsPercentGrowth ? f.Growth : (int)Math.Round(f.Growth * 8 / 1024m);
+            if (file.Percent != f.IsPercentGrowth || file.Growth != growthPages)
+                statements.Add($"ALTER DATABASE {db} MODIFY FILE (NAME = {name}, FILEGROWTH = {file.Growth}{(file.Percent ? "%" : "MB")});");
+
+            var maxChanged = file.Unlimited != f.IsUnlimited || (!file.Unlimited && file.MaxMb != Math.Round(f.MaxSize * 8 / 1024m));
+            if (maxChanged)
+                statements.Add($"ALTER DATABASE {db} MODIFY FILE (NAME = {name}, MAXSIZE = {(file.Unlimited ? "UNLIMITED" : $"{file.MaxMb:0}MB")});");
+        }
+
+        if (!string.IsNullOrWhiteSpace(newFile.Name))
+        {
+            var path = string.IsNullOrWhiteSpace(newFile.Path) ? DefaultFilePath : newFile.Path.Trim();
+            statements.Add($"ALTER DATABASE {db} ADD {(newFile.IsLog ? "LOG " : "")}FILE (NAME = {Sql.Lit(newFile.Name.Trim())}, FILENAME = {Sql.Lit(path)}, SIZE = {Math.Max(newFile.SizeMb, 1)}MB, FILEGROWTH = 64MB);");
+        }
+
+        if (statements.Count == 0)
+        {
+            Session.Toast(L["NoChanges"], ToastKind.Info);
+            return;
+        }
+
+        Run("SaveFiles", string.Join("\n", statements));
+    }
+
+    private void ShrinkFile(DatabaseFile file) => Actions.ShowAction(new ActionRequest
+    {
+        TitleKey = "ShrinkFile",
+        Subject = $"{Db} / {file.Name}",
+        MessageKey = "ShrinkHint",
+        Server = Tab.Server,
+        Database = Db,
+        KeepOpen = true,
+        ShowSql = true,
+        Fields = [new ActionField { Key = "target", LabelKey = "TargetSizeMb", Type = FieldType.Number, HintKey = "TargetSizeHint" }],
+        Validate = r => r.Text("target") is { Length: > 0 } v && !int.TryParse(v, out _) ? "InvalidNumber" : null,
+        BuildSql = (r, _) => r.Text("target") is { Length: > 0 } target
+            ? $"DBCC SHRINKFILE ({Sql.Lit(file.Name)}, {int.Parse(target)});"
+            : $"DBCC SHRINKFILE ({Sql.Lit(file.Name)});",
+        OnSuccess = LoadAsync
+    });
+
+    private void RemoveFile(DatabaseFile file) =>
+        Run("RemoveFile", $"ALTER DATABASE {Sql.Q(Db)} REMOVE FILE {Sql.Q(file.Name)};", danger: true);
+}

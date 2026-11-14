@@ -1,0 +1,96 @@
+@inherits LocalizedComponentBase
+@inject TableCopyJob CopyJob
+
+@* Shown after Save (Commit): the job is either Committed or Failed (the commit itself failed) *@
+<div class="modal-backdrop" @onclick="OnClose">
+    <div class="modal modal-sm" role="alertdialog" aria-modal="true" aria-labelledby="result-title" @onclick:stopPropagation="true">
+        <div class="modal-head result-head @OutcomeClass">
+            <span class="result-icon" aria-hidden="true">@Icon</span>
+            <h2 id="result-title">@Title</h2>
+        </div>
+
+        <div class="modal-body">
+            @if (IsSaved)
+            {
+                <p class="result-summary">@string.Format(L["ResultSavedSummary"], CopyJob.CopiedRows.ToString("N0"), Saved.Count)</p>
+
+                <div class="result-stats">
+                    <div class="stat">
+                        <div class="stat-value">@CopyJob.CopiedRows.ToString("N0")</div>
+                        <div class="stat-label">@L["StatRowsSaved"]</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-value"><bdi>@Saved.Count / @CopyJob.Items.Count</bdi></div>
+                        <div class="stat-label">@L["StatTablesSucceeded"]</div>
+                    </div>
+                    @if (CopyJob.SkippedRows > 0)
+                    {
+                        <div class="stat">
+                            <div class="stat-value">@CopyJob.SkippedRows.ToString("N0")</div>
+                            <div class="stat-label">@L["StatRowsSkipped"]</div>
+                        </div>
+                    }
+                    @if (NotCopied.Count > 0)
+                    {
+                        <div class="stat bad">
+                            <div class="stat-value">@NotCopied.Count</div>
+                            <div class="stat-label">@L["StatTablesFailed"]</div>
+                        </div>
+                    }
+                </div>
+
+                @if (NotCopied.Count > 0)
+                {
+                    <div class="failed-tables">
+                        <div class="failed-title">@L["FailedTablesTitle"]</div>
+                        <ul>
+                            @foreach (var item in NotCopied)
+                            {
+                                <li>
+                                    <bdi class="mono" dir="ltr">@item.FullName</bdi>
+                                    <span class="badge @(item.Status == TableCopyStatus.Failed ? "failed" : "missing")">@L[$"Status{item.Status}"]</span>
+                                    @if (!string.IsNullOrEmpty(item.Error))
+                                    {
+                                        <div class="row-error" title="@item.Error"><bdi>@item.Error</bdi></div>
+                                    }
+                                </li>
+                            }
+                        </ul>
+                    </div>
+                }
+            }
+            else
+            {
+                <p class="result-summary">@L["ResultCommitFailedSummary"]</p>
+                @if (!string.IsNullOrEmpty(CopyJob.Error))
+                {
+                    <div class="status error"><bdi>@CopyJob.Error</bdi></div>
+                }
+            }
+        </div>
+
+        <div class="modal-actions">
+            <button class="btn primary" @onclick="OnClose">@L["Close"]</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private bool IsSaved => CopyJob.State == CopyJobState.Committed;
+
+    private List<TableCopyItem> Saved => CopyJob.Items.Where(i => i.Status == TableCopyStatus.Copied).ToList();
+
+    private List<TableCopyItem> NotCopied => CopyJob.Items
+        .Where(i => i.Status is TableCopyStatus.Failed or TableCopyStatus.Stopped)
+        .ToList();
+
+    private string OutcomeClass => !IsSaved ? "failure" : NotCopied.Count > 0 ? "partial" : "success";
+
+    private string Icon => !IsSaved ? "✕" : NotCopied.Count > 0 ? "!" : "✓";
+
+    private string Title => !IsSaved
+        ? L["ResultCommitFailedTitle"]
+        : NotCopied.Count > 0 ? L["ResultCommittedPartialTitle"] : L["ResultCommittedTitle"];
+}

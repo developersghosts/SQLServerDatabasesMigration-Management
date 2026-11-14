@@ -1,0 +1,259 @@
+@using Microsoft.Data.SqlClient
+@inherits LocalizedComponentBase
+@inject IJSRuntime JS
+@inject ManagerSession Session
+@inject ResultEditService Editing
+
+<div class="rgrid-wrap @(Multiple ? "multi" : "single")">
+    <div class="rgrid-tools">
+        <span class="muted">
+            @if (Multiple)
+            {
+                <span>#@(Index + 1) · </span>
+            }
+            <bdi>@Set.TotalRows.ToString("N0")</bdi> @L["RowsCount"] · <bdi>@Set.Columns.Count</bdi> @L["ColumnsCount"]
+        </span>
+        @if (Set.Truncated)
+        {
+            <span class="badge missing">@string.Format(L["ShowingFirstRows"], Set.Rows.Count.ToString("N0"))</span>
+        }
+        <span class="muted small grid-tip">@L["CellEditTip"]</span>
+        <span class="spacer"></span>
+        @if (selected is { } cell && cell.Row < Set.Rows.Count)
+        {
+            <button class="btn xs" @onclick="() => OpenAsync(cell.Row, cell.Column)" title="Enter"><Icon Name="edit" /> @L["OpenCell"]</button>
+            <button class="btn xs" @onclick="CopyCellAsync" title="Ctrl+C"><Icon Name="copy" /> @L["CopyCell"]</button>
+        }
+        <button class="btn xs" @onclick="CopyAllAsync"><Icon Name="copy" /> @L["CopyWithHeaders"]</button>
+        <button class="btn xs" @onclick="ExportAsync"><Icon Name="download" /> @L["ExportCsv"]</button>
+    </div>
+    <div class="rgrid-scroll" dir="ltr" tabindex="0" @onkeydown="OnKeyAsync">
+        <table class="rgrid">
+            <thead>
+                <tr>
+                    <th class="rn"></th>
+                    @foreach (var column in Set.Columns)
+                    {
+                        <th title="@column.TypeName">@(column.Name.Length == 0 ? L["NoColumnName"] : column.Name)</th>
+                    }
+                </tr>
+            </thead>
+            <tbody>
+                <Virtualize Items="Set.Indexes" Context="rowIndex" ItemSize="25" SpacerElement="tr" OverscanCount="15">
+                    <tr>
+                        <td class="rn">@(rowIndex + 1)</td>
+                        @{
+                            var row = Set.Rows[rowIndex];
+                        }
+                        @for (var c = 0; c < row.Length; c++)
+                        {
+                            var column = c;
+                            var value = row[column];
+                            var css = value is null ? "null" : Set.Columns[column].IsNumeric ? "num" : null;
+                            var isSelected = selected is { } s && s.Row == rowIndex && s.Column == column;
+                            @* dir="auto": Arabic values read right-to-left, English left-to-right *@
+                            <td class="@css @(isSelected ? "sel" : null)" dir="auto"
+                                @onclick="() => selected = (rowIndex, column)"
+                                @ondblclick="() => OpenAsync(rowIndex, column)">@(value ?? "NULL")</td>
+                        }
+                    </tr>
+                </Virtualize>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@if (viewer is { } v)
+{
+    <ModalFrame Title="@v.Title" Subject="@v.Subtitle" IconName="@(v.Target is null ? "query" : "edit")" Size="lg" Busy="@v.Saving" OnClose="CloseViewer">
+        <ChildContent>
+            <textarea class="value-editor" dir="auto" spellcheck="false" aria-label="@v.Title"
+                      readonly="@(v.Target is null)" disabled="@(v.IsNull || v.Saving)"
+                      placeholder="@(v.IsNull ? "NULL" : null)"
+                      value="@(v.IsNull ? string.Empty : v.Text)"
+                      @oninput="e => v.Text = e.Value as string ?? string.Empty"></textarea>
+
+            @if (v.Checking)
+            {
+                <div class="run-head muted small"><span class="spinner tiny"></span> @L["CheckingEditable"]</div>
+            }
+            else if (v.Target is { } target)
+            {
+                <div class="muted small">
+                    @L["SavesTo"] <bdi class="mono">@($"{Sql.Q(target.Database)}.{target.Table}.{Sql.Q(target.Column)}")</bdi>
+                    · @L["RowMatchedBy"] <bdi class="mono">@string.Join(", ", target.Keys.Select(k => k.Column))</bdi>
+                </div>
+            }
+            else if (v.Reason is not null)
+            {
+                <div class="banner info flush">
+                    @L[v.Reason]
+                    @if (v.Detail is not null)
+                    {
+                        <div class="mono small muted"><bdi>@v.Detail</bdi></div>
+                    }
+                </div>
+            }
+
+            @if (v.Error is not null)
+            {
+                <div class="status error flush"><bdi>@v.Error</bdi></div>
+            }
+        </ChildContent>
+        <Footer>
+            <button class="btn" @onclick="CopyViewerAsync"><Icon Name="copy" /> @L["Copy"]</button>
+            @if (v.Target is { IsNullable: true })
+            {
+                <label class="check"><input type="checkbox" checked="@v.IsNull" disabled="@v.Saving" @onchange="e => v.IsNull = e.Value is true" /> NULL</label>
+            }
+            <span class="spacer"></span>
+            <button class="btn" @onclick="CloseViewer" disabled="@v.Saving">@L["Close"]</button>
+            @if (v.Target is not null)
+            {
+                <button class="btn primary" @onclick="SaveAsync" disabled="@(!v.Changed || v.Saving)">
+                    @if (v.Saving)
+                    {
+                        <span class="spinner tiny"></span>
+                    }
+                    else
+                    {
+                        <Icon Name="save" />
+                    }
+                    @L["Save"]
+                </button>
+            }
+        </Footer>
+    </ModalFrame>
+}
+
+@code {
+    [Parameter, EditorRequired] public ResultSet Set { get; set; } = default!;
+    [Parameter, EditorRequired] public ManagedServer Server { get; set; } = default!;
+    [Parameter] public int Index { get; set; }
+    [Parameter] public bool Multiple { get; set; }
+
+    private (int Row, int Column)? selected;
+    private CellViewer? viewer;
+
+    private sealed class CellViewer
+    {
+        public required int Row { get; init; }
+        public required int Column { get; init; }
+        public required string Title { get; init; }
+        public string? Subtitle { get; init; }
+        public string? Original { get; init; }
+        public string Text { get; set; } = string.Empty;
+        public bool IsNull { get; set; }
+        public bool Checking { get; set; } = true;
+        public CellEditTarget? Target { get; set; }
+        public string? Reason { get; set; }
+        public string? Detail { get; set; }
+        public bool Saving { get; set; }
+        public string? Error { get; set; }
+
+        public bool Changed => IsNull ? Original is not null : Original != Text;
+    }
+
+    private async Task OpenAsync(int row, int column)
+    {
+        if (row >= Set.Rows.Count)
+            return;
+
+        selected = (row, column);
+        var value = Set.Rows[row][column];
+        var info = Set.Columns[column];
+        var v = new CellViewer
+        {
+            Row = row,
+            Column = column,
+            Title = info.Name.Length == 0 ? L["NoColumnName"] : info.Name,
+            Subtitle = $"{info.TypeName} · {L["RowNumber"]} {row + 1}",
+            Original = value,
+            Text = value ?? string.Empty,
+            IsNull = value is null
+        };
+        viewer = v;
+        StateHasChanged();
+
+        try
+        {
+            var edit = await Editing.DescribeAsync(Server, Set);
+            if (edit.Columns.TryGetValue(column, out var target))
+            {
+                // Values cut for display can't be saved back
+                if (value is not null && (value.Length >= 65535 || (value.StartsWith("0x", StringComparison.Ordinal) && value.EndsWith('…'))))
+                    v.Reason = "NotEditableTruncated";
+                else
+                    v.Target = target;
+            }
+            else
+            {
+                v.Reason = edit.Columns.Count > 0 ? "NotEditableColumn" : edit.Reason ?? "NotEditableUnknown";
+                v.Detail = edit.Detail;
+            }
+        }
+        catch (Exception ex)
+        {
+            v.Reason = "NotEditableDescribe";
+            v.Detail = ex.Message;
+        }
+        finally
+        {
+            v.Checking = false;
+        }
+    }
+
+    private void CloseViewer()
+    {
+        if (viewer is { Saving: false })
+            viewer = null;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (viewer is not { Target: { } target } v)
+            return;
+
+        v.Saving = true;
+        v.Error = null;
+        try
+        {
+            var shown = await Editing.UpdateAsync(Server, target, Set.Rows[v.Row], v.IsNull ? null : v.Text);
+            Set.Rows[v.Row][v.Column] = shown;
+            Session.Toast(L["CellSaved"]);
+            viewer = null;
+        }
+        catch (Exception ex) when (ex is FormatException or InvalidOperationException or SqlException)
+        {
+            v.Error = ex.Message;
+        }
+        finally
+        {
+            v.Saving = false;
+        }
+    }
+
+    private async Task CopyAsync(string text)
+    {
+        if (await JS.InvokeAsync<bool>("sqlManager.copyText", text))
+            Session.Toast(L["Copied"], ToastKind.Info);
+    }
+
+    private Task CopyCellAsync() =>
+        selected is { } cell && cell.Row < Set.Rows.Count ? CopyAsync(Set.Rows[cell.Row][cell.Column] ?? "NULL") : Task.CompletedTask;
+
+    private Task CopyAllAsync() => CopyAsync(SqlValues.ToTsv(Set));
+
+    private Task CopyViewerAsync() => viewer is { } v ? CopyAsync(v.IsNull ? "NULL" : v.Text) : Task.CompletedTask;
+
+    private async Task ExportAsync() =>
+        await JS.InvokeVoidAsync("sqlManager.download", $"results-{DateTime.Now:yyyyMMdd-HHmmss}.csv", "﻿" + SqlValues.ToCsv(Set), "text/csv;charset=utf-8");
+
+    private async Task OnKeyAsync(KeyboardEventArgs e)
+    {
+        if ((e.CtrlKey || e.MetaKey) && e.Key is "c" or "C")
+            await CopyCellAsync();
+        else if (e.Key is "Enter" or "F2" && selected is { } cell)
+            await OpenAsync(cell.Row, cell.Column);
+    }
+}

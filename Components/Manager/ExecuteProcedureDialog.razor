@@ -1,0 +1,105 @@
+@inherits SqlDialogBase
+@inject SchemaService Schema
+
+<ModalFrame Title="@L["ExecuteProcedure"]" Subject="@($"{Node.Database}.{Node.QualifiedName}")" IconName="procedure" Size="lg" OnClose="Close">
+    <ChildContent>
+        @if (parameters is null)
+        {
+            <div class="empty">@(Error ?? L["Loading"])</div>
+        }
+        else if (Inputs.Count == 0)
+        {
+            <p class="hint">@L["NoParameters"]</p>
+        }
+        else
+        {
+            <div class="grid-scroll">
+                <table class="grid">
+                    <thead>
+                        <tr>
+                            <th>@L["Parameter"]</th>
+                            <th>@L["DataType"]</th>
+                            <th>@L["OutputParameter"]</th>
+                            <th class="check">@L["PassNull"]</th>
+                            <th>@L["Value"]</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var parameter in Inputs)
+                        {
+                            <tr>
+                                <td class="mono"><bdi>@parameter.Name</bdi></td>
+                                <td class="mono muted"><bdi>@parameter.TypeSql</bdi></td>
+                                <td>@(parameter.IsOutput ? "OUTPUT" : "")</td>
+                                <td class="check">
+                                    @if (!parameter.IsOutput)
+                                    {
+                                        <input type="checkbox" checked="@nulls.Contains(parameter.Name)" @onchange="e => ToggleNull(parameter.Name, e.Value is true)" />
+                                    }
+                                </td>
+                                <td>
+                                    @if (!parameter.IsOutput)
+                                    {
+                                        <input class="cell mono" dir="auto" value="@values.GetValueOrDefault(parameter.Name)" disabled="@nulls.Contains(parameter.Name)"
+                                               @onchange="e => values[parameter.Name] = e.Value as string ?? string.Empty" />
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <p class="hint">@L["ExecuteProcedureHint"]</p>
+        }
+
+        @if (parameters is not null)
+        {
+            <SqlPreview Sql="@BuildSql()" Open="true" />
+        }
+    </ChildContent>
+    <Footer>
+        <button class="btn" @onclick="() => ScriptToQuery(Node.Server, Node.Database, BuildSql())" disabled="@(parameters is null)"><Icon Name="query" /> @L["ScriptToNewQuery"]</button>
+        <span class="spacer"></span>
+        <button class="btn" @onclick="Close">@L["Cancel"]</button>
+        <button class="btn primary" @onclick="Execute" disabled="@(parameters is null)"><Icon Name="play" /> @L["Execute"]</button>
+    </Footer>
+</ModalFrame>
+
+@code {
+    [Parameter, EditorRequired] public ExplorerNode Node { get; set; } = default!;
+
+    private List<ParameterDefinition>? parameters;
+    private readonly Dictionary<string, string> values = [];
+    private readonly HashSet<string> nulls = [];
+
+    private List<ParameterDefinition> Inputs => parameters?.Where(p => p.Id > 0).ToList() ?? [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            parameters = await Schema.GetParametersAsync(Node.Server, Node.Database!, Node.Schema!, Node.Name!);
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+    }
+
+    private void ToggleNull(string name, bool on)
+    {
+        if (on)
+            nulls.Add(name);
+        else
+            nulls.Remove(name);
+    }
+
+    private string BuildSql() => ScriptBuilder.ExecuteProcedure(Node.QualifiedName, parameters ?? [],
+        Inputs.ToDictionary(p => p.Name, p => nulls.Contains(p.Name) ? null : values.GetValueOrDefault(p.Name, string.Empty)));
+
+    private void Execute()
+    {
+        Session.OpenQuery(Node.Server, Node.Database, BuildSql(), execute: true);
+        Session.CloseDialog();
+    }
+}

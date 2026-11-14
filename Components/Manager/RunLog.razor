@@ -1,0 +1,74 @@
+@inherits LocalizedComponentBase
+
+@if (Run.Execution is { } execution)
+{
+    var percent = Percent(execution);
+    <div class="run-panel">
+        <div class="run-head">
+            @if (Run.IsRunning)
+            {
+                <span class="spinner"></span>
+                <span>@L["Running"]</span>
+            }
+            else if (execution.Cancelled)
+            {
+                <span class="badge missing">@L["QueryCancelled"]</span>
+            }
+            else if (execution.HasErrors)
+            {
+                <span class="badge failed">@L["CompletedWithErrors"]</span>
+            }
+            else
+            {
+                <span class="badge both">@L["CompletedSuccessfully"]</span>
+            }
+            <span class="muted mono"><bdi>@execution.Elapsed.ToString(@"hh\:mm\:ss")</bdi></span>
+        </div>
+        @if (percent is not null)
+        {
+            <div class="progress small" role="progressbar" aria-valuenow="@percent" aria-valuemin="0" aria-valuemax="100">
+                <div class="progress-fill @(execution.HasErrors ? "error" : !Run.IsRunning ? "ok" : null)" style="width: @(percent)%"></div>
+            </div>
+        }
+        @if (execution.Messages.Count > 0)
+        {
+            <div class="run-log" dir="ltr">
+                @foreach (var message in execution.Messages.TakeLast(400))
+                {
+                    <div class="msg @MessageClass(message)" dir="auto">@message.Text</div>
+                }
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public SqlRunState Run { get; set; } = default!;
+
+    /// <summary>BACKUP/RESTORE ... STATS report "n percent processed."</summary>
+    private int? Percent(QueryExecution execution)
+    {
+        int? percent = null;
+        foreach (var message in execution.Messages)
+        {
+            if (message.Kind != MessageKind.Info)
+                continue;
+            var text = message.Text;
+            var index = text.IndexOf(" percent processed", StringComparison.OrdinalIgnoreCase);
+            if (index > 0 && int.TryParse(text[..index].Trim(), out var value))
+                percent = value;
+        }
+
+        if (percent is not null && !Run.IsRunning && !execution.HasErrors)
+            percent = 100;
+        return percent;
+    }
+
+    public static string MessageClass(QueryMessage message) => message.Kind switch
+    {
+        MessageKind.Error => "error",
+        MessageKind.RowsAffected => "rows",
+        MessageKind.Success => "success",
+        _ => "info"
+    };
+}

@@ -1,0 +1,150 @@
+@inherits LocalizedComponentBase
+
+<div class="modal-backdrop" @onclick="OnCancel">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="review-title" @onclick:stopPropagation="true">
+        <div class="modal-head">
+            <h2 id="review-title">@L["ReviewTitle"]</h2>
+        </div>
+
+        <div class="modal-body">
+            @if (TablesWithData.Count > 0)
+            {
+                <div class="banner info">
+                    @string.Format(L["ExistingRowsNote"], TablesWithData.Count)
+                    <div class="collation-pairs">
+                        @foreach (var item in TablesWithData)
+                        {
+                            <span><bdi class="mono" dir="ltr">@item.DestinationName</bdi> <span class="muted">(@item.DestinationRows.ToString("N0"))</span></span>
+                        }
+                    </div>
+                </div>
+            }
+
+            @if (RenamedTables.Count > 0)
+            {
+                <div class="banner info">
+                    @L["RenamedNote"]
+                    <div class="collation-pairs">
+                        @foreach (var item in RenamedTables)
+                        {
+                            <bdi class="mono" dir="ltr">@item.FullName → @item.DestinationName</bdi>
+                        }
+                    </div>
+                </div>
+            }
+
+            @if (Comparison.CollationChanges > 0)
+            {
+                <div class="banner info">
+                    @string.Format(L["CollationNote"], Comparison.CollationChanges)
+                    <div class="collation-pairs">
+                        @foreach (var pair in Comparison.CollationPairs)
+                        {
+                            <bdi class="mono" dir="ltr">@pair</bdi>
+                        }
+                    </div>
+                </div>
+            }
+
+            @if (Differences.Count > 0)
+            {
+                <p class="diff-intro">@string.Format(L["ColumnDiffIntro"], Differences.Count)</p>
+
+                @foreach (var table in Differences)
+                {
+                    <div class="diff-table">
+                        <div class="diff-table-name">
+                            <bdi class="mono" dir="ltr">@table.Table@(table.IsRenamed ? $" → {table.DestinationTable}" : "")</bdi>
+                            @if (table.IsBlocking)
+                            {
+                                <span class="badge failed">@L["WillFail"]</span>
+                            }
+                        </div>
+                        <table class="grid diff-grid">
+                            <thead>
+                                <tr>
+                                    <th>@L["ColColumn"]</th>
+                                    <th>@L["ColDifference"]</th>
+                                    <th>@L["Source"]</th>
+                                    <th>@L["Destination"]</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var column in table.Columns)
+                                {
+                                    <tr>
+                                        <td class="mono"><bdi>@column.Column</bdi></td>
+                                        <td><span class="badge @BadgeClass(column)">@DiffText(column)</span></td>
+                                        <td class="mono muted"><bdi>@(column.Source?.Display ?? "—")</bdi></td>
+                                        <td class="mono muted"><bdi>@(column.Destination?.Display ?? "—")</bdi></td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+
+                @if (AllColumns.Any(c => c.Kind == ColumnDiffKind.DestinationOnly))
+                {
+                    <div class="banner info">@L["IgnoreNewColumnsNote"]</div>
+                }
+
+                @if (Differences.Any(d => d.IsBlocking))
+                {
+                    <div class="banner warn">@L["BlockingColumnsNote"]</div>
+                }
+
+                @if (AllColumns.Any(c => c.MayLoseCharacters))
+                {
+                    <div class="banner warn">@L["LossyNote"]</div>
+                }
+            }
+
+            @if (ClearDestination)
+            {
+                <div class="banner warn">@L["ConfirmClear"]</div>
+            }
+        </div>
+
+        <div class="modal-actions">
+            <button class="btn" @onclick="OnCancel">@L["Cancel"]</button>
+            <button class="btn primary" @onclick="OnConfirm">@L["ContinueCopy"]</button>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ColumnComparison Comparison { get; set; } = default!;
+
+    /// <summary>Selected tables copied into a destination table with a different name.</summary>
+    [Parameter] public IReadOnlyList<TableCopyItem> RenamedTables { get; set; } = [];
+
+    /// <summary>Selected tables whose destination already has rows; only missing rows will be added.</summary>
+    [Parameter] public IReadOnlyList<TableCopyItem> TablesWithData { get; set; } = [];
+    [Parameter] public bool ClearDestination { get; set; }
+    [Parameter] public EventCallback OnConfirm { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private IReadOnlyList<TableColumnDiff> Differences => Comparison.Tables;
+
+    private IEnumerable<ColumnDiff> AllColumns => Differences.SelectMany(d => d.Columns);
+
+    private string DiffText(ColumnDiff column) => column.Kind switch
+    {
+        ColumnDiffKind.DestinationOnly when column.IsBlocking => L["DiffDestinationOnlyBlocking"],
+        ColumnDiffKind.DestinationOnly => L["DiffDestinationOnly"],
+        ColumnDiffKind.SourceOnly => L["DiffSourceOnly"],
+        ColumnDiffKind.TypeMismatch when column.MayLoseCharacters => L["DiffTypeMismatchLossy"],
+        ColumnDiffKind.TypeMismatch => L["DiffTypeMismatch"],
+        _ => L["DiffCollationLossy"]
+    };
+
+    private static string BadgeClass(ColumnDiff column) => column.Kind switch
+    {
+        ColumnDiffKind.DestinationOnly when column.IsBlocking => "failed",
+        _ when column.MayLoseCharacters => "failed",
+        ColumnDiffKind.DestinationOnly => "missing",
+        ColumnDiffKind.SourceOnly => "pending",
+        _ => "active"
+    };
+}

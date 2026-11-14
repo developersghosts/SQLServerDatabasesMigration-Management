@@ -1,0 +1,184 @@
+@inherits LocalizedComponentBase
+@inject TableCopyJob CopyJob
+
+<section class="card panel">
+    <div class="card-head">
+        <h2>@L["SourceTables"]</h2>
+        <span class="role-tag src">@L["Source"]</span>
+    </div>
+
+    @if (Server is not null)
+    {
+        <div class="panel-sub">
+            <bdi class="mono">@Server.ServerName / @Server.DatabaseName</bdi>
+            <bdi class="version-pill">@Server.FriendlyVersion</bdi>
+        </div>
+    }
+
+    @if (IsLoading)
+    {
+        <div class="empty">@L["LoadingTables"]</div>
+    }
+    else if (!string.IsNullOrEmpty(Error))
+    {
+        <div class="status error">
+            <div class="status-title">@L["LoadTablesFailed"]</div>
+            <div class="status-body"><bdi>@Error</bdi></div>
+        </div>
+    }
+    else
+    {
+        <div class="panel-tools">
+            <input class="search" type="search" placeholder="@L["FilterTables"]" @bind="filter" @bind:event="oninput" />
+            <label class="toggle">
+                <input type="checkbox" @bind="onlyMissing" />
+                @L["OnlyMissingInDestination"]
+            </label>
+            @if (CopiedCount > 0)
+            {
+                <label class="toggle">
+                    <input type="checkbox" @bind="showCopied" />
+                    @string.Format(L["ShowCopiedTables"], CopiedCount)
+                </label>
+            }
+        </div>
+
+        <div class="panel-stats">
+            <span><strong>@Tables.Count</strong> @L["TablesCount"]</span>
+            <span><strong>@Tables.Sum(t => t.RowCount).ToString("N0")</strong> @L["RowsCount"]</span>
+            <span><strong>@CopyJob.Items.Count</strong> @L["SelectedForCopy"]</span>
+            @if (CopiedCount > 0)
+            {
+                <span><strong>@CopiedCount</strong> @L["CopiedTablesLabel"]</span>
+            }
+            @if (RenamedCount > 0)
+            {
+                <span><strong>@RenamedCount</strong> @L["RenamedTablesLabel"]</span>
+            }
+            <span class="muted"><strong>@MissingCount</strong> @L["MissingInDestination"]</span>
+        </div>
+
+        <div class="table-scroll">
+            <table class="grid">
+                <thead>
+                    <tr>
+                        <th class="check">
+                            <input type="checkbox"
+                                   title="@L["SelectAll"]"
+                                   checked="@AreAllSelected(VisibleEligible)"
+                                   disabled="@(CopyJob.IsLocked || !VisibleEligible.Any())"
+                                   @onchange="e => SetSelected(VisibleEligible, e)" />
+                        </th>
+                        <th>@L["ColTable"]</th>
+                        <th class="num">@L["ColRows"]</th>
+                        <th>@L["ColStatus"]</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var schema in VisibleTables.GroupBy(t => t.Schema, StringComparer.OrdinalIgnoreCase))
+                    {
+                        var eligible = schema.Where(Exists).ToList();
+                        <tr class="schema-row">
+                            <td class="check">
+                                <input type="checkbox"
+                                       title="@L["SelectSchema"]"
+                                       checked="@AreAllSelected(eligible)"
+                                       disabled="@(CopyJob.IsLocked || eligible.Count == 0)"
+                                       @onchange="e => SetSelected(eligible, e)" />
+                            </td>
+                            <td>
+                                <bdi class="mono">@schema.Key</bdi>
+                                <span class="schema-meta">
+                                    @schema.Count() @L["TablesCount"] · <bdi>@eligible.Count(CopyJob.IsSelected) / @eligible.Count</bdi> @L["SelectedForCopy"]
+                                </span>
+                            </td>
+                            <td class="num">@schema.Sum(t => t.RowCount).ToString("N0")</td>
+                            <td></td>
+                        </tr>
+
+                        @foreach (var table in schema)
+                        {
+                            var match = Matches.GetValueOrDefault(table.FullName);
+                            var selected = CopyJob.IsSelected(table);
+                            <tr class="@(selected ? "selected" : null)">
+                                <td class="check">
+                                    <input type="checkbox"
+                                           checked="@selected"
+                                           disabled="@(match is null || CopyJob.IsLocked)"
+                                           title="@(match is null ? L["NotInDestinationCantCopy"] : null)"
+                                           @onchange="e => SetSelected([table], e)" />
+                                </td>
+                                <td class="mono table-name" title="@table.FullName"><bdi>@table.Name</bdi></td>
+                                <td class="num">@table.RowCount.ToString("N0")</td>
+                                <td>
+                                    @if (CopyJob.CopiedTables.Contains(table.FullName))
+                                    {
+                                        <span class="badge both">@L["StatusCopied"]</span>
+                                    }
+                                    else if (match is null)
+                                    {
+                                        <span class="badge missing" title="@L["NotInDestinationCantCopy"]">@L["Missing"]</span>
+                                    }
+                                    else if (IsRenamed(table, match))
+                                    {
+                                        <span class="badge renamed" title="@L["RenamedHint"] @match.FullName">
+                                            @L["MatchedTo"] <bdi>@(string.Equals(match.Schema, table.Schema, StringComparison.OrdinalIgnoreCase) ? match.Name : $"{match.Schema}.{match.Name}")</bdi>
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge both">@L["InBoth"]</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    }
+                    @if (!VisibleTables.Any())
+                    {
+                        <tr><td colspan="4" class="empty">@L["NoTablesMatch"]</td></tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter] public ServerInfo? Server { get; set; }
+    [Parameter] public IReadOnlyList<TableInfo> Tables { get; set; } = [];
+
+    /// <summary>Matched destination table for each source table (by source full name), from <see cref="TableMatcher"/>.</summary>
+    [Parameter] public IReadOnlyDictionary<string, TableInfo> Matches { get; set; } = new Dictionary<string, TableInfo>();
+
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public string? Error { get; set; }
+
+    private string filter = string.Empty;
+    private bool onlyMissing;
+    private bool showCopied;
+
+    private bool Exists(TableInfo table) => Matches.ContainsKey(table.FullName);
+
+    private static bool IsRenamed(TableInfo table, TableInfo match) =>
+        !string.Equals(table.FullName, match.FullName, StringComparison.OrdinalIgnoreCase);
+
+    private int MissingCount => Tables.Count(t => !Exists(t));
+
+    private int CopiedCount => Tables.Count(t => CopyJob.CopiedTables.Contains(t.FullName));
+
+    private int RenamedCount => Tables.Count(t => Matches.TryGetValue(t.FullName, out var match) && IsRenamed(t, match));
+
+    private IEnumerable<TableInfo> VisibleTables => Tables
+        .Where(t => showCopied || !CopyJob.CopiedTables.Contains(t.FullName))
+        .Where(t => string.IsNullOrWhiteSpace(filter) || t.FullName.Contains(filter.Trim(), StringComparison.OrdinalIgnoreCase))
+        .Where(t => !onlyMissing || !Exists(t));
+
+    private List<TableInfo> VisibleEligible => VisibleTables.Where(Exists).ToList();
+
+    private bool AreAllSelected(IReadOnlyCollection<TableInfo> tables) =>
+        tables.Count > 0 && tables.All(CopyJob.IsSelected);
+
+    // Used by the select-all, per-schema and per-table checkboxes; acts on the visible (filtered) tables only
+    private void SetSelected(IEnumerable<TableInfo> tables, ChangeEventArgs e) =>
+        CopyJob.SetSelected(tables.Select(t => (t, Matches[t.FullName])).ToList(), e.Value is true);
+}

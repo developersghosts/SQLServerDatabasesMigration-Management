@@ -1,0 +1,119 @@
+@inject ManagerSession Session
+@inject ManagerActions Actions
+@inject Localizer L
+
+@if (IsVisible)
+{
+    var selected = Session.Selected == Node;
+    <div class="tree-item" role="none">
+        <div class="tree-row @(selected ? "selected" : null) @(Node.IsDisabled ? "disabled" : null) @(Node.IsOnline ? null : "offline")"
+             style="padding-inline-start: @(Depth * 14 + 4)px"
+             role="treeitem" tabindex="0"
+             aria-selected="@(selected ? "true" : "false")"
+             aria-expanded="@(Node.CanExpand ? (Node.IsExpanded ? "true" : "false") : null)"
+             title="@Node.Label"
+             @onclick="Select"
+             @ondblclick="DoubleClickAsync"
+             @oncontextmenu="ShowMenu" @oncontextmenu:preventDefault="true"
+             @onkeydown="OnKeyAsync">
+            <span class="tree-toggle @(Node.IsExpanded ? "open" : null)" @onclick="ToggleAsync" @onclick:stopPropagation="true">
+                @if (Node.IsLoading)
+                {
+                    <span class="spinner tiny"></span>
+                }
+                else if (Node.CanExpand)
+                {
+                    <Icon Name="chevron" />
+                }
+            </span>
+            <Icon Name="@IconPaths.For(Node)" Class="@IconClass" />
+            <span class="tree-label"><bdi>@Label</bdi></span>
+            @if (Node.Detail is not null)
+            {
+                <span class="tree-detail"><bdi>(@Node.Detail)</bdi></span>
+            }
+            @if (Node.RowCount is { } rows)
+            {
+                <span class="tree-detail" title="@L["RowsCount"]"><bdi>@rows.ToString("N0")</bdi></span>
+            }
+            <button class="tree-more" tabindex="-1" title="@L["Actions"]" aria-label="@L["Actions"]" @onclick="ShowMenu" @onclick:stopPropagation="true"><Icon Name="more" /></button>
+        </div>
+
+        @if (Node.Error is not null)
+        {
+            <div class="tree-error" style="padding-inline-start: @(Depth * 14 + 38)px"><bdi>@Node.Error</bdi></div>
+        }
+
+        @if (Node.IsExpanded && Node.Children is { } children)
+        {
+            <div role="group">
+                @foreach (var child in children)
+                {
+                    <ExplorerTreeNode @key="child.Key" Node="child" Depth="Depth + 1" Filter="@Filter" />
+                }
+                @if (children.Count == 0)
+                {
+                    <div class="tree-empty" style="padding-inline-start: @(Depth * 14 + 38)px">@L["NoItems"]</div>
+                }
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public ExplorerNode Node { get; set; } = default!;
+    [Parameter] public int Depth { get; set; }
+    [Parameter] public string? Filter { get; set; }
+
+    private string Label => Node.LabelKey is not null ? L[Node.LabelKey] : Node.Label;
+
+    private string IconClass => Node.IsFolder ? "c-folder" : $"c-{Node.Kind.ToString().ToLowerInvariant()}";
+
+    /// <summary>The filter hides objects, never servers, databases or folders.</summary>
+    private bool IsVisible =>
+        string.IsNullOrWhiteSpace(Filter) || Node.IsFolder || Node.Kind is NodeKind.Server or NodeKind.Database ||
+        Node.Label.Contains(Filter.Trim(), StringComparison.OrdinalIgnoreCase) ||
+        Node.Kind is NodeKind.Column or NodeKind.Parameter or NodeKind.Key or NodeKind.Constraint or NodeKind.Index or NodeKind.Trigger;
+
+    private void Select() => Session.Select(Node);
+
+    private Task ToggleAsync() => Session.ToggleAsync(Node);
+
+    private async Task DoubleClickAsync()
+    {
+        if (Node.CanExpand)
+            await Session.ToggleAsync(Node);
+    }
+
+    private void ShowMenu(MouseEventArgs e)
+    {
+        Session.Select(Node);
+        Session.ShowMenu(e.ClientX, e.ClientY, Actions.MenuFor(Node));
+    }
+
+    private async Task OnKeyAsync(KeyboardEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case "Enter" or " ":
+                Session.Select(Node);
+                await Session.ToggleAsync(Node);
+                break;
+            case "ArrowRight" when !Node.IsExpanded && L.Dir == "ltr":
+            case "ArrowLeft" when !Node.IsExpanded && L.Dir == "rtl":
+                await Session.ExpandAsync(Node);
+                break;
+            case "ArrowLeft" when Node.IsExpanded && L.Dir == "ltr":
+            case "ArrowRight" when Node.IsExpanded && L.Dir == "rtl":
+                await Session.ToggleAsync(Node);
+                break;
+            case "F5":
+                await Session.RefreshAsync(Node);
+                break;
+            case "ContextMenu":
+                Session.Select(Node);
+                Session.ShowMenu(80, 160, Actions.MenuFor(Node));
+                break;
+        }
+    }
+}

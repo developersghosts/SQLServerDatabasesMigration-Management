@@ -1,0 +1,111 @@
+﻿@inherits LocalizedComponentBase
+@inject SqlServerService SqlServer
+@inject TableCopyJob CopyJob
+
+<section class="card">
+    <div class="card-head">
+        <h2>@(Role == DatabaseRole.Source ? L["SourceDatabase"] : L["DestinationDatabase"])</h2>
+        <span class="role-tag @(Role == DatabaseRole.Source ? "src" : "dst")">
+            @(Role == DatabaseRole.Source ? L["CopyFrom"] : L["CopyTo"])
+        </span>
+    </div>
+
+    <label class="field-label" for="cs-@Role">@L["ConnectionString"]</label>
+    <textarea id="cs-@Role"
+              class="cs-input"
+              dir="ltr"
+              rows="4"
+              spellcheck="false"
+              placeholder="@Placeholder"
+              @bind="Connection.ConnectionString"
+              @bind:event="oninput"
+              @bind:after="OnConnectionStringChanged"
+              disabled="@(isTesting || CopyJob.IsLocked)"></textarea>
+
+    <p class="hint">
+        @L["EncryptHint"]
+        <code dir="ltr">Encrypt=Optional;TrustServerCertificate=True</code>
+    </p>
+
+    @if (CopyJob.IsLocked)
+    {
+        <div class="banner warn">@L["LockedWhileCopying"]</div>
+    }
+
+    <div class="card-actions">
+        <button class="btn" @onclick="TestAsync" disabled="@(isTesting || CopyJob.IsLocked || string.IsNullOrWhiteSpace(Connection.ConnectionString))">
+            @(isTesting ? L["Testing"] : L["TestConnection"])
+        </button>
+    </div>
+
+    @if (Connection.Server is { } server)
+    {
+        <div class="status ok">
+            <div class="status-title">@L["Connected"] · <bdi>@server.FriendlyVersion</bdi></div>
+            <dl class="server-facts">
+                <dt>@L["Server"]</dt><dd><bdi>@server.ServerName</bdi></dd>
+                <dt>@L["Database"]</dt><dd><bdi>@server.DatabaseName</bdi></dd>
+                <dt>@L["Version"]</dt><dd><bdi>@server.ProductVersion @server.ProductLevel</bdi></dd>
+                <dt>@L["Edition"]</dt><dd><bdi>@server.Edition</bdi></dd>
+            </dl>
+        </div>
+    }
+    else if (!string.IsNullOrEmpty(Connection.Error))
+    {
+        <div class="status error">
+            <div class="status-title">@L["ConnectionFailed"]</div>
+            <div class="status-body"><bdi>@Connection.Error</bdi></div>
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public DatabaseRole Role { get; set; }
+    [Parameter, EditorRequired] public DatabaseConnection Connection { get; set; } = default!;
+    [Parameter] public EventCallback OnStatusChanged { get; set; }
+
+    private bool isTesting;
+
+    private string Placeholder => Role == DatabaseRole.Source
+        ? "Server=OLD-SERVER\\SQL2012;Database=MyDb;User Id=sa;Password=..."
+        : "Server=localhost;Database=MyDb;Trusted_Connection=True;";
+
+    public async Task<bool> TestAsync()
+    {
+        isTesting = true;
+        Connection.Server = null;
+        Connection.Error = null;
+        StateHasChanged();
+
+        try
+        {
+            Connection.Server = await SqlServer.GetServerInfoAsync(Connection.ConnectionString);
+        }
+        catch (MissingDatabaseException)
+        {
+            Connection.Error = L["MissingDatabase"];
+        }
+        catch (Exception ex)
+        {
+            Connection.Error = ex.Message;
+        }
+        finally
+        {
+            isTesting = false;
+        }
+
+        await OnStatusChanged.InvokeAsync();
+        return Connection.IsConnected;
+    }
+
+    private async Task OnConnectionStringChanged()
+    {
+        if (Connection.Server is null && Connection.Error is null)
+            return;
+
+        // Any edit invalidates the previous test result
+        Connection.Server = null;
+        Connection.Error = null;
+        await OnStatusChanged.InvokeAsync();
+    }
+}

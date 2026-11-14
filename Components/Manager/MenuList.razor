@@ -1,0 +1,50 @@
+@inject Localizer L
+
+@foreach (var item in Clean(Items))
+{
+    if (item.IsSeparator)
+    {
+        <div class="ctx-sep" role="separator"></div>
+    }
+    else if (item.Children is { } children)
+    {
+        <div class="ctx-item has-sub" role="menuitem" aria-haspopup="true" tabindex="0">
+            <span class="ctx-label">@L[item.LabelKey!]</span>
+            <span class="ctx-arrow"><Icon Name="chevron" /></span>
+            <div class="ctx-menu ctx-sub" role="menu">
+                <MenuList Items="children" OnPick="OnPick" />
+            </div>
+        </div>
+    }
+    else
+    {
+        <button class="ctx-item @(item.Danger ? "danger" : null)" role="menuitem" disabled="@item.Disabled" @onclick="() => OnPick.InvokeAsync(item)">
+            <span class="ctx-label">@L[item.LabelKey!]</span>
+            @if (item.Shortcut is not null)
+            {
+                <span class="ctx-shortcut">@item.Shortcut</span>
+            }
+        </button>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<MenuItem> Items { get; set; } = [];
+    [Parameter] public EventCallback<MenuItem> OnPick { get; set; }
+
+    /// <summary>Drops leading, trailing and repeated separators.</summary>
+    private static List<MenuItem> Clean(IReadOnlyList<MenuItem> items)
+    {
+        var result = new List<MenuItem>();
+        foreach (var item in items)
+        {
+            if (item.IsSeparator && (result.Count == 0 || result[^1].IsSeparator))
+                continue;
+            result.Add(item);
+        }
+
+        while (result.Count > 0 && result[^1].IsSeparator)
+            result.RemoveAt(result.Count - 1);
+        return result;
+    }
+}

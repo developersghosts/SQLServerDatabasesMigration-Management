@@ -1,0 +1,47 @@
+@inherits LocalizedComponentBase
+@inject ManagerSession Session
+
+<div class="toast-host" aria-live="polite">
+    @foreach (var toast in Session.Toasts)
+    {
+        <div class="toast @toast.Kind.ToString().ToLowerInvariant()" @key="toast.Id" role="status">
+            <Icon Name="@(toast.Kind == ToastKind.Error ? "close" : toast.Kind == ToastKind.Success ? "check" : "query")" />
+            <span class="toast-text"><bdi>@toast.Text</bdi></span>
+            <button class="icon-btn" aria-label="@L["Close"]" @onclick="() => Session.Dismiss(toast)"><Icon Name="close" /></button>
+        </div>
+    }
+</div>
+
+@code {
+    private readonly HashSet<string> scheduled = [];
+    private readonly CancellationTokenSource disposed = new();
+
+    protected override void OnInitialized() => Session.Changed += OnChanged;
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        foreach (var toast in Session.Toasts.Where(t => scheduled.Add(t.Id)))
+            _ = DismissLaterAsync(toast);
+    }
+
+    private async Task DismissLaterAsync(Toast toast)
+    {
+        try
+        {
+            await Task.Delay(toast.Kind == ToastKind.Error ? 10000 : 5000, disposed.Token);
+            await InvokeAsync(() => Session.Dismiss(toast));
+        }
+        catch (TaskCanceledException)
+        {
+        }
+    }
+
+    public override void Dispose()
+    {
+        disposed.Cancel();
+        Session.Changed -= OnChanged;
+        base.Dispose();
+    }
+}

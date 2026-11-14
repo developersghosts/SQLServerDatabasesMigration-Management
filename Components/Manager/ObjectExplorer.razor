@@ -1,0 +1,79 @@
+@inherits LocalizedComponentBase
+@inject ManagerSession Session
+@inject ManagerActions Actions
+
+<div class="explorer">
+    <div class="explorer-head">
+        <span class="explorer-title">@L["ObjectExplorer"]</span>
+        <div class="explorer-tools">
+            <button class="icon-btn" title="@L["Connect"]" aria-label="@L["Connect"]" @onclick="Connect"><Icon Name="plug" /></button>
+            <button class="icon-btn" title="@L["Disconnect"]" aria-label="@L["Disconnect"]" @onclick="Disconnect" disabled="@(SelectedRoot is null)"><Icon Name="unplug" /></button>
+            <button class="icon-btn" title="@L["NewQuery"]" aria-label="@L["NewQuery"]" @onclick="NewQuery" disabled="@(Session.Selected is null)"><Icon Name="query" /></button>
+            <button class="icon-btn" title="@L["Refresh"]" aria-label="@L["Refresh"]" @onclick="RefreshAsync" disabled="@(Session.Selected is null)"><Icon Name="refresh" /></button>
+        </div>
+    </div>
+
+    @if (Session.Roots.Count > 0)
+    {
+        <div class="explorer-filter">
+            <input class="search sm" type="search" placeholder="@L["FilterObjects"]" aria-label="@L["FilterObjects"]" @bind="filter" @bind:event="oninput" />
+        </div>
+    }
+
+    <div class="tree" role="tree" aria-label="@L["ObjectExplorer"]">
+        @foreach (var root in Session.Roots)
+        {
+            <ExplorerTreeNode @key="root.Key" Node="root" Depth="0" Filter="@filter" />
+        }
+
+        @if (Session.Roots.Count == 0)
+        {
+            <div class="explorer-empty">
+                <Icon Name="server" Class="big" />
+                <p>@L["NoServersConnected"]</p>
+                <button class="btn primary sm" @onclick="Connect"><Icon Name="plug" /> @L["ConnectToServer"]</button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private string filter = string.Empty;
+
+    private ExplorerNode? SelectedRoot
+    {
+        get
+        {
+            var node = Session.Selected;
+            while (node?.Parent is not null)
+                node = node.Parent;
+            return node;
+        }
+    }
+
+    protected override void OnInitialized() => Session.Changed += OnChanged;
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    private void Connect() => Session.ShowDialog(typeof(ConnectDialog), new Dictionary<string, object>());
+
+    private void Disconnect()
+    {
+        if (SelectedRoot is { } root)
+            Session.Disconnect(root);
+    }
+
+    private void NewQuery()
+    {
+        if (Session.Selected is { } node)
+            Session.OpenQuery(node.Server, node.Database);
+    }
+
+    private Task RefreshAsync() => Session.RefreshAsync(Session.Selected);
+
+    public override void Dispose()
+    {
+        Session.Changed -= OnChanged;
+        base.Dispose();
+    }
+}

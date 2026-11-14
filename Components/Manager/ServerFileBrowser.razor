@@ -1,0 +1,194 @@
+@inherits LocalizedComponentBase
+@inject AdminService Admin
+
+@* Browses folders on the SQL Server machine (not the browser's computer), like SSMS's "Locate" dialogs. *@
+<div class="file-browser">
+    <div class="file-browser-head">
+        <strong>@L[Mode == FileBrowserMode.Folder ? "SelectFolder" : "SelectFile"]</strong>
+        <span class="muted">@L["ServerFilesHint"]</span>
+    </div>
+
+    <div class="file-browser-bar">
+        <button class="btn sm" type="button" title="@L["Up"]" @onclick="UpAsync" disabled="@(loading || string.IsNullOrEmpty(path))"><Icon Name="up" /></button>
+        <input class="input sm mono grow" dir="ltr" @bind="path" @onkeydown="OnPathKey" />
+        <button class="btn sm" type="button" @onclick="() => LoadAsync(path)" disabled="@loading">@L["Go"]</button>
+    </div>
+
+    @if (drives.Count > 0)
+    {
+        <div class="drives">
+            @foreach (var drive in drives)
+            {
+                <button class="chip" type="button" @onclick="() => LoadAsync(drive)"><Icon Name="drive" /> <bdi>@drive</bdi></button>
+            }
+        </div>
+    }
+
+    <div class="file-list" dir="ltr">
+        @if (loading)
+        {
+            <div class="empty">@L["Loading"]</div>
+        }
+        else if (error is not null)
+        {
+            <div class="status error">
+                <div class="status-title">@L["BrowseFailed"]</div>
+                <div class="status-body"><bdi>@error</bdi></div>
+            </div>
+        }
+        else
+        {
+            @foreach (var entry in Visible)
+            {
+                <button type="button" class="file-row @(selected == entry.Name ? "selected" : null)"
+                        @onclick="() => Pick(entry)" @ondblclick="() => OpenAsync(entry)">
+                    <Icon Name="@(entry.IsFile ? "file" : "folder")" />
+                    <span>@entry.Name</span>
+                </button>
+            }
+            @if (!Visible.Any())
+            {
+                <div class="empty">@L["NoFiles"]</div>
+            }
+        }
+    </div>
+
+    @if (Mode != FileBrowserMode.Folder)
+    {
+        <div class="file-browser-bar">
+            <label class="form-label">@L["FileName"]</label>
+            <input class="input sm mono grow" dir="ltr" @bind="fileName" @bind:event="oninput" />
+            @if (Extensions.Length > 0)
+            {
+                <label class="check"><input type="checkbox" @bind="allFiles" /> @L["AllFiles"]</label>
+            }
+        </div>
+    }
+
+    <div class="file-browser-actions">
+        <span class="muted mono small"><bdi>@Result</bdi></span>
+        <span class="spacer"></span>
+        <button class="btn" type="button" @onclick="OnCancel">@L["Cancel"]</button>
+        <button class="btn primary" type="button" @onclick="ConfirmAsync" disabled="@(string.IsNullOrEmpty(Result))">@L["OK"]</button>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ManagedServer Server { get; set; } = default!;
+    [Parameter] public string? InitialPath { get; set; }
+    [Parameter] public FileBrowserMode Mode { get; set; } = FileBrowserMode.Open;
+
+    /// <summary>Lower-case extensions with the dot, e.g. ".bak".</summary>
+    [Parameter] public string[] Extensions { get; set; } = [];
+    [Parameter] public EventCallback<string> OnPick { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private string path = string.Empty;
+    private string fileName = string.Empty;
+    private string? selected;
+    private bool allFiles;
+    private bool loading;
+    private string? error;
+    private List<FileEntry> entries = [];
+    private List<string> drives = [];
+
+    private char Separator => path.StartsWith('/') ? '/' : '\\';
+
+    private IEnumerable<FileEntry> Visible => entries.Where(e =>
+        !e.IsFile || (Mode != FileBrowserMode.Folder &&
+                      (allFiles || Extensions.Length == 0 || Extensions.Any(x => e.Name.EndsWith(x, StringComparison.OrdinalIgnoreCase)))));
+
+    private string Result => Mode == FileBrowserMode.Folder
+        ? AdminService.WithSeparator(path)
+        : string.IsNullOrWhiteSpace(fileName) ? string.Empty : AdminService.WithSeparator(path) + fileName.Trim();
+
+    protected override async Task OnInitializedAsync()
+    {
+        var initial = InitialPath ?? string.Empty;
+        if (Mode != FileBrowserMode.Folder && !string.IsNullOrEmpty(initial) && !initial.EndsWith('\\') && !initial.EndsWith('/'))
+        {
+            fileName = initial[(initial.LastIndexOfAny(['\\', '/']) + 1)..];
+            initial = AdminService.DirectoryOf(initial);
+        }
+
+        try
+        {
+            drives = await Admin.GetDrivesAsync(Server);
+        }
+        catch (Exception)
+        {
+            drives = [];
+        }
+
+        if (string.IsNullOrEmpty(initial))
+            initial = drives.FirstOrDefault() ?? string.Empty;
+
+        await LoadAsync(initial);
+    }
+
+    private async Task LoadAsync(string target)
+    {
+        if (string.IsNullOrWhiteSpace(target))
+            return;
+
+        path = AdminService.WithSeparator(target.Trim());
+        selected = null;
+        loading = true;
+        error = null;
+        StateHasChanged();
+
+        try
+        {
+            entries = await Admin.BrowseAsync(Server, path);
+        }
+        catch (Exception ex)
+        {
+            entries = [];
+            error = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task UpAsync()
+    {
+        var trimmed = path.TrimEnd('\\', '/');
+        var index = trimmed.LastIndexOfAny(['\\', '/']);
+        if (index >= 0)
+            await LoadAsync(trimmed[..(index + 1)]);
+    }
+
+    private void Pick(FileEntry entry)
+    {
+        selected = entry.Name;
+        if (entry.IsFile)
+            fileName = entry.Name;
+    }
+
+    private async Task OpenAsync(FileEntry entry)
+    {
+        if (!entry.IsFile)
+        {
+            await LoadAsync(AdminService.WithSeparator(path) + entry.Name + Separator);
+        }
+        else
+        {
+            fileName = entry.Name;
+            await ConfirmAsync();
+        }
+    }
+
+    private async Task OnPathKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await LoadAsync(path);
+    }
+
+    private async Task ConfirmAsync()
+    {
+        if (!string.IsNullOrEmpty(Result))
+            await OnPick.InvokeAsync(Result);
+    }
+}

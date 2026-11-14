@@ -1,0 +1,310 @@
+@inherits SqlDialogBase
+@inject AdminService Admin
+@inject ExplorerService Explorer
+
+<ModalFrame Title="@(IsNew ? L["NewLogin"] : L["LoginProperties"])" Subject="@(IsNew ? Server.DisplayName : LoginName)" IconName="login" Size="xl" Busy="@Run.IsRunning" OnClose="Close">
+    <ChildContent>
+        @if (loading)
+        {
+            <div class="empty">@L["Loading"]</div>
+        }
+        else
+        {
+            <div class="props-layout compact">
+                <nav class="props-nav">
+                    @foreach (var (key, label) in Pages)
+                    {
+                        <button class="props-nav-item @(page == key ? "active" : null)" @onclick="() => page = key">@L[label]</button>
+                    }
+                </nav>
+                <div class="props-body">
+                    @switch (page)
+                    {
+                        case "general":
+                            <div class="form-grid">
+                                <label class="form-label" for="lg-name">@L["LoginName"] *</label>
+                                <input id="lg-name" class="input mono" dir="ltr" @bind="name" @bind:event="oninput" disabled="@(!IsNew || Run.IsRunning)" placeholder="@(windows ? "DOMAIN\\user" : "app_user")" />
+
+                                <label class="form-label">@L["Authentication"]</label>
+                                <div class="radio-row">
+                                    <label class="check"><input type="radio" name="lg-auth" checked="@windows" disabled="@(!IsNew)" @onchange="() => windows = true" /> @L["WindowsAuthentication"]</label>
+                                    <label class="check"><input type="radio" name="lg-auth" checked="@(!windows)" disabled="@(!IsNew)" @onchange="() => windows = false" /> @L["SqlAuthentication"]</label>
+                                </div>
+
+                                @if (!windows)
+                                {
+                                    @if (!IsNew)
+                                    {
+                                        <div></div>
+                                        <label class="check"><input type="checkbox" @bind="changePassword" /> @L["ChangePassword"]</label>
+                                    }
+                                    @if (IsNew || changePassword)
+                                    {
+                                        <label class="form-label" for="lg-pw">@L["Password"] *</label>
+                                        <input id="lg-pw" class="input" dir="ltr" type="password" autocomplete="new-password" @bind="password" @bind:event="oninput" />
+                                        <label class="form-label" for="lg-pw2">@L["ConfirmPassword"] *</label>
+                                        <input id="lg-pw2" class="input" dir="ltr" type="password" autocomplete="new-password" @bind="confirm" @bind:event="oninput" />
+                                    }
+                                    <div></div>
+                                    <div class="check-list">
+                                        <label class="check"><input type="checkbox" @bind="checkPolicy" /> @L["EnforcePolicy"]</label>
+                                        <label class="check"><input type="checkbox" @bind="checkExpiration" disabled="@(!checkPolicy)" /> @L["EnforceExpiration"]</label>
+                                    </div>
+                                }
+
+                                <label class="form-label" for="lg-db">@L["DefaultDatabase"]</label>
+                                <select id="lg-db" class="input mono" dir="ltr" @bind="defaultDatabase">
+                                    @foreach (var db in databases)
+                                    {
+                                        <option value="@db">@db</option>
+                                    }
+                                </select>
+                            </div>
+                            break;
+
+                        case "roles":
+                            <p class="hint">@L["ServerRolesHint"]</p>
+                            <div class="check-grid">
+                                @foreach (var role in serverRoles)
+                                {
+                                    <label class="check">
+                                        <input type="checkbox" checked="@(role == "public" || roles.Contains(role))" disabled="@(role == "public")"
+                                               @onchange="e => Toggle(roles, role, e.Value is true)" /> <bdi class="mono">@role</bdi>
+                                    </label>
+                                }
+                            </div>
+                            break;
+
+                        case "mapping":
+                            <p class="hint">@L["UserMappingHint"]</p>
+                            <div class="grid-scroll">
+                                <table class="grid">
+                                    <thead>
+                                        <tr>
+                                            <th class="check">@L["Map"]</th>
+                                            <th>@L["Database"]</th>
+                                            <th>@L["User"]</th>
+                                            <th>@L["DefaultSchema"]</th>
+                                            @foreach (var role in AdminService.MappingRoles)
+                                            {
+                                                <th class="check mono small">@role</th>
+                                            }
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var mapping in mappings)
+                                        {
+                                            <tr class="@(mapping.Mapped ? "selected" : null)">
+                                                <td class="check"><input type="checkbox" @bind="mapping.Mapped" /></td>
+                                                <td class="mono"><bdi>@mapping.Database</bdi></td>
+                                                <td><input class="cell mono" dir="ltr" @bind="mapping.User" disabled="@(!mapping.Mapped || mapping.OriginalUser is not null)" placeholder="@name" /></td>
+                                                <td><input class="cell mono narrow" dir="ltr" @bind="mapping.DefaultSchema" disabled="@(!mapping.Mapped)" /></td>
+                                                @foreach (var role in AdminService.MappingRoles)
+                                                {
+                                                    <td class="check"><input type="checkbox" checked="@mapping.Roles.Contains(role)" disabled="@(!mapping.Mapped)" @onchange="e => Toggle(mapping.Roles, role, e.Value is true)" /></td>
+                                                }
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                            break;
+
+                        case "status":
+                            <div class="check-list">
+                                <label class="check"><input type="checkbox" @bind="enabled" /> @L["LoginEnabled"]</label>
+                            </div>
+                            break;
+                    }
+                </div>
+            </div>
+
+            @if (Error is not null)
+            {
+                <div class="status error">@Error</div>
+            }
+
+            <SqlPreview Sql="@BuildSql(true)" />
+            <RunLog Run="Run" />
+        }
+    </ChildContent>
+    <Footer>
+        <button class="btn" @onclick="() => ScriptToQuery(Server, null, BuildSql(true))" disabled="@Run.IsRunning"><Icon Name="query" /> @L["ScriptToNewQuery"]</button>
+        <span class="spacer"></span>
+        @if (Run.IsRunning)
+        {
+            <button class="btn" @onclick="Run.Cancel">@L["Stop"]</button>
+        }
+        else
+        {
+            <button class="btn" @onclick="Close">@L["Cancel"]</button>
+            <button class="btn primary" @onclick="SaveAsync" disabled="@loading">@L["OK"]</button>
+        }
+    </Footer>
+</ModalFrame>
+
+@code {
+    [Parameter, EditorRequired] public ManagedServer Server { get; set; } = default!;
+
+    /// <summary>Null for a new login.</summary>
+    [Parameter] public string? LoginName { get; set; }
+
+    private static readonly (string Key, string Label)[] Pages =
+    [
+        ("general", "General"), ("roles", "ServerRoles"), ("mapping", "UserMapping"), ("status", "Status")
+    ];
+
+    private bool IsNew => LoginName is null;
+
+    private LoginDetails? original;
+    private string page = "general";
+    private string name = string.Empty;
+    private bool windows;
+    private string password = string.Empty;
+    private string confirm = string.Empty;
+    private bool changePassword;
+    private bool checkPolicy = true;
+    private bool checkExpiration;
+    private string defaultDatabase = "master";
+    private bool enabled = true;
+    private HashSet<string> roles = new(StringComparer.OrdinalIgnoreCase);
+    private List<string> serverRoles = [];
+    private List<string> databases = [];
+    private List<LoginMapping> mappings = [];
+    private bool loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            databases = await Explorer.GetDatabaseNamesAsync(Server);
+            serverRoles = await Admin.GetServerRolesAsync(Server);
+            if (!IsNew)
+            {
+                original = await Admin.GetLoginAsync(Server, LoginName!) ?? throw new InvalidOperationException($"{LoginName} was not found.");
+                name = original.Name;
+                windows = original.Type is "U" or "G";
+                checkPolicy = original.CheckPolicy;
+                checkExpiration = original.CheckExpiration;
+                defaultDatabase = original.DefaultDatabase ?? "master";
+                enabled = !original.IsDisabled;
+                roles = new HashSet<string>(original.ServerRoles, StringComparer.OrdinalIgnoreCase);
+            }
+
+            mappings = await Admin.GetLoginMappingsAsync(Server, LoginName);
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private static void Toggle(HashSet<string> set, string value, bool on)
+    {
+        if (on)
+            set.Add(value);
+        else
+            set.Remove(value);
+    }
+
+    private string? Validate()
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return string.Format(L["FieldRequired"], L["LoginName"]);
+        if (!windows && (IsNew || changePassword))
+        {
+            if (password.Length == 0)
+                return string.Format(L["FieldRequired"], L["Password"]);
+            if (password != confirm)
+                return L["PasswordsDontMatch"];
+        }
+
+        return null;
+    }
+
+    private string BuildSql(bool forDisplay)
+    {
+        var login = Sql.Q(name.Trim());
+        var pw = forDisplay ? "N'********'" : Sql.Lit(password);
+        var statements = new List<string>();
+        var policy = $"CHECK_POLICY = {(checkPolicy ? "ON" : "OFF")}, CHECK_EXPIRATION = {(checkPolicy && checkExpiration ? "ON" : "OFF")}";
+
+        if (IsNew)
+        {
+            statements.Add(windows
+                ? $"CREATE LOGIN {login} FROM WINDOWS WITH DEFAULT_DATABASE = {Sql.Q(defaultDatabase)};"
+                : $"CREATE LOGIN {login} WITH PASSWORD = {pw}, DEFAULT_DATABASE = {Sql.Q(defaultDatabase)}, {policy};");
+            if (!enabled)
+                statements.Add($"ALTER LOGIN {login} DISABLE;");
+            foreach (var role in roles.Where(r => r != "public"))
+                statements.Add(AdminService.AddServerRoleMember(Server, role, name.Trim()));
+        }
+        else
+        {
+            var o = original!;
+            if (!windows && changePassword)
+                statements.Add($"ALTER LOGIN {login} WITH PASSWORD = {pw};");
+            if (!windows && (checkPolicy != o.CheckPolicy || (checkPolicy && checkExpiration) != o.CheckExpiration))
+                statements.Add($"ALTER LOGIN {login} WITH {policy};");
+            if (!string.Equals(defaultDatabase, o.DefaultDatabase, StringComparison.OrdinalIgnoreCase))
+                statements.Add($"ALTER LOGIN {login} WITH DEFAULT_DATABASE = {Sql.Q(defaultDatabase)};");
+            if (enabled == o.IsDisabled)
+                statements.Add($"ALTER LOGIN {login} {(enabled ? "ENABLE" : "DISABLE")};");
+            foreach (var role in roles.Where(r => r != "public" && !o.ServerRoles.Contains(r, StringComparer.OrdinalIgnoreCase)))
+                statements.Add(AdminService.AddServerRoleMember(Server, role, name.Trim()));
+            foreach (var role in o.ServerRoles.Where(r => !roles.Contains(r)))
+                statements.Add(AdminService.DropServerRoleMember(Server, role, name.Trim()));
+        }
+
+        foreach (var m in mappings)
+        {
+            var user = string.IsNullOrWhiteSpace(m.User) ? name.Trim() : m.User.Trim();
+            var changes = new List<string>();
+            if (m.Mapped && m.OriginalUser is null)
+            {
+                changes.Add($"CREATE USER {Sql.Q(user)} FOR LOGIN {login}{(string.IsNullOrWhiteSpace(m.DefaultSchema) ? "" : $" WITH DEFAULT_SCHEMA = {Sql.Q(m.DefaultSchema.Trim())}")};");
+                changes.AddRange(m.Roles.Select(r => AdminService.AddRoleMember(Server, r, user)));
+            }
+            else if (!m.Mapped && m.OriginalUser is not null && m.OriginalUser != "dbo")
+            {
+                changes.Add($"DROP USER {Sql.Q(m.OriginalUser)};");
+            }
+            else if (m.Mapped && m.OriginalUser is not null)
+            {
+                changes.AddRange(m.Roles.Where(r => !m.OriginalRoles.Contains(r)).Select(r => AdminService.AddRoleMember(Server, r, m.OriginalUser)));
+                changes.AddRange(m.OriginalRoles.Where(r => AdminService.MappingRoles.Contains(r) && !m.Roles.Contains(r)).Select(r => AdminService.DropRoleMember(Server, r, m.OriginalUser)));
+            }
+
+            if (changes.Count > 0)
+                statements.Add($"USE {Sql.Q(m.Database)};\n" + string.Join("\n", changes));
+        }
+
+        if (statements.Count == 0)
+            return string.Empty;
+        return string.Join("\nGO\n", statements) + "\nGO\nUSE [master];\n";
+    }
+
+    private async Task SaveAsync()
+    {
+        Error = Validate();
+        if (Error is not null)
+            return;
+
+        var sql = BuildSql(false);
+        if (sql.Length == 0)
+        {
+            Session.CloseDialog();
+            return;
+        }
+
+        if (!await RunSqlAsync(Server, "master", sql))
+            return;
+
+        await Session.RefreshWhereAsync(n => n.Server == Server && n.Kind is NodeKind.LoginsFolder or NodeKind.UsersFolder);
+        Finish();
+    }
+}

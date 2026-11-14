@@ -1,0 +1,179 @@
+@inherits LocalizedComponentBase
+@inject ManagerSession Session
+
+<ModalFrame Title="@L[Request.TitleKey]" Subject="@Request.Subject" Busy="@run.IsRunning" OnClose="Close" Size="md"
+            IconName="@(Request.Danger ? "close" : "query")">
+    <ChildContent>
+        @if (Request.MessageKey is not null)
+        {
+            <div class="banner @(Request.Danger ? "warn" : "info") flush">@L[Request.MessageKey]</div>
+        }
+
+        @if (Request.Fields.Count > 0)
+        {
+            <div class="form-grid">
+                @foreach (var field in Request.Fields)
+                {
+                    var id = $"f-{field.Key}";
+                    if (field.Type == FieldType.Checkbox)
+                    {
+                        <div class="span-2">
+                            <label class="check"><input type="checkbox" @bind="field.Checked" disabled="@run.IsRunning" /> @L[field.LabelKey]</label>
+                            @if (field.HintKey is not null)
+                            {
+                                <div class="field-hint">@L[field.HintKey]</div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <label class="form-label" for="@id">@L[field.LabelKey]@(field.Required ? " *" : "")</label>
+                        <div>
+                            @switch (field.Type)
+                            {
+                                case FieldType.Select:
+                                    <select id="@id" class="input" @bind="field.Value" disabled="@run.IsRunning">
+                                        @foreach (var option in field.Options)
+                                        {
+                                            <option value="@option.Value">@option.Label</option>
+                                        }
+                                    </select>
+                                    break;
+                                case FieldType.TextArea:
+                                    <textarea id="@id" class="input mono" dir="ltr" rows="4" spellcheck="false" @bind="field.Value" @bind:event="oninput" disabled="@run.IsRunning"></textarea>
+                                    break;
+                                default:
+                                    <input id="@id" class="input" dir="ltr" type="@InputType(field)" autocomplete="off" @bind="field.Value" @bind:event="oninput" disabled="@run.IsRunning" />
+                                    break;
+                            }
+                            @if (field.HintKey is not null)
+                            {
+                                <div class="field-hint">@L[field.HintKey]</div>
+                            }
+                        </div>
+                    }
+                }
+            </div>
+        }
+
+        @if (error is not null)
+        {
+            <div class="status error">@error</div>
+        }
+
+        <SqlPreview Sql="@Preview" Open="@Request.ShowSql" />
+        <RunLog Run="run" />
+    </ChildContent>
+    <Footer>
+        <button class="btn" @onclick="ScriptToQuery" disabled="@run.IsRunning"><Icon Name="query" /> @L["ScriptToNewQuery"]</button>
+        <span class="spacer"></span>
+        @if (run.IsRunning)
+        {
+            <button class="btn" @onclick="run.Cancel"><Icon Name="stop" /> @L["Stop"]</button>
+        }
+        else if (done)
+        {
+            <button class="btn primary" @onclick="Close">@L["Close"]</button>
+        }
+        else
+        {
+            <button class="btn" @onclick="Close">@L["Cancel"]</button>
+            <button class="btn @(Request.Danger ? "danger-solid" : "primary")" @onclick="ExecuteAsync">@L[Request.ConfirmKey]</button>
+        }
+    </Footer>
+</ModalFrame>
+
+@code {
+    [Parameter, EditorRequired] public ActionRequest Request { get; set; } = default!;
+
+    private readonly SqlRunState run = new();
+    private string? error;
+    private bool done;
+
+    private string Preview
+    {
+        get
+        {
+            try
+            {
+                return Request.BuildSql(Request, true);
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+        }
+    }
+
+    private static string InputType(ActionField field) => field.Type switch
+    {
+        FieldType.Password => "password",
+        FieldType.Number => "number",
+        _ => "text"
+    };
+
+    private string? Validate()
+    {
+        foreach (var field in Request.Fields.Where(f => f.Required && f.Type != FieldType.Checkbox))
+            if (string.IsNullOrWhiteSpace(field.Value))
+                return string.Format(L["FieldRequired"], L[field.LabelKey]);
+
+        return Request.Validate?.Invoke(Request) is { } key ? L[key] : null;
+    }
+
+    private async Task ExecuteAsync()
+    {
+        error = Validate();
+        if (error is not null)
+            return;
+
+        string sql;
+        try
+        {
+            sql = Request.BuildSql(Request, false);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return;
+        }
+
+        if (Request.ReleaseDatabase is { } release)
+            Db.ClearPool(Request.Server.ConnectionStringFor(release));
+
+        var ok = await run.RunAsync(Request.Server.ConnectionStringFor(Request.Database ?? "master"), sql,
+            action => InvokeAsync(action), StateHasChanged);
+
+        if (Request.ReleaseDatabase is { } released)
+            Db.ClearPool(Request.Server.ConnectionStringFor(released));
+
+        if (!ok)
+            return;
+
+        if (Request.Refresh is { } node)
+            await Session.RefreshAsync(node);
+        if (Request.OnSuccess is { } onSuccess)
+            await onSuccess();
+
+        if (Request.KeepOpen)
+        {
+            done = true;
+            return;
+        }
+
+        Session.Toast(L["CommandsCompleted"]);
+        Session.CloseDialog();
+    }
+
+    private void ScriptToQuery()
+    {
+        Session.OpenQuery(Request.Server, Request.Database ?? "master", Preview);
+        Session.CloseDialog();
+    }
+
+    private void Close()
+    {
+        if (!run.IsRunning)
+            Session.CloseDialog();
+    }
+}

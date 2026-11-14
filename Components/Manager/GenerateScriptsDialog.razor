@@ -1,0 +1,179 @@
+@inherits SqlDialogBase
+@inject SchemaService Schema
+@inject IJSRuntime JS
+
+<ModalFrame Title="@L["GenerateScripts"]" Subject="@($"{Server.DisplayName} / {Database}")" IconName="query" Size="lg" Busy="@generating" OnClose="Close">
+    <ChildContent>
+        <div class="radio-row">
+            <label class="check"><input type="radio" name="gs-scope" checked="@(!selectObjects)" @onchange="() => selectObjects = false" /> @L["ScriptWholeDatabase"]</label>
+            <label class="check"><input type="radio" name="gs-scope" checked="@selectObjects" @onchange="SelectObjectsAsync" /> @L["ScriptSelectedObjects"]</label>
+        </div>
+
+        @if (selectObjects)
+        {
+            <div class="panel-tools">
+                <input class="search sm" type="search" placeholder="@L["Filter"]" @bind="filter" @bind:event="oninput" />
+                <button class="btn xs" @onclick="() => SetAll(true)">@L["SelectAll"]</button>
+                <button class="btn xs" @onclick="() => SetAll(false)">@L["SelectNone"]</button>
+                <span class="muted small">@chosen.Count / @(objects?.Count ?? 0)</span>
+            </div>
+            <div class="object-list" dir="ltr">
+                @if (objects is null)
+                {
+                    <div class="empty">@L["Loading"]</div>
+                }
+                else
+                {
+                    @foreach (var group in VisibleObjects.GroupBy(o => o.Type))
+                    {
+                        <div class="object-group">@TypeLabel(group.Key)</div>
+                        @foreach (var item in group)
+                        {
+                            var key = $"{item.Schema}.{item.Name}";
+                            <label class="check">
+                                <input type="checkbox" checked="@chosen.Contains(key)" @onchange="e => Toggle(key, e.Value is true)" />
+                                <span class="mono">@key</span>
+                            </label>
+                        }
+                    }
+                }
+            </div>
+        }
+
+        <h3 class="section-title">@L["ScriptOptions"]</h3>
+        <div class="check-grid">
+            <label class="check"><input type="checkbox" @bind="tables" /> @L["FolderTables"]</label>
+            <label class="check"><input type="checkbox" @bind="views" /> @L["FolderViews"]</label>
+            <label class="check"><input type="checkbox" @bind="procedures" /> @L["FolderProcedures"]</label>
+            <label class="check"><input type="checkbox" @bind="functions" /> @L["FolderFunctions"]</label>
+            <label class="check"><input type="checkbox" @bind="triggers" /> @L["FolderTriggers"]</label>
+            <label class="check"><input type="checkbox" @bind="synonyms" /> @L["FolderSynonyms"]</label>
+        </div>
+        <div class="check-list">
+            <label class="check"><input type="checkbox" @bind="data" /> @L["ScriptData"]</label>
+            @if (data)
+            {
+                <label class="inline-field">@L["MaxRowsPerTable"] <input class="input sm narrow" type="number" min="1" max="1000000" @bind="maxRows" /></label>
+            }
+            <label class="check"><input type="checkbox" @bind="dropFirst" /> @L["ScriptDropFirst"]</label>
+            <label class="check"><input type="checkbox" @bind="useDatabase" /> @L["ScriptUseDatabase"]</label>
+        </div>
+
+        <h3 class="section-title">@L["Output"]</h3>
+        <div class="radio-row">
+            <label class="check"><input type="radio" name="gs-out" checked="@(!toFile)" @onchange="() => toFile = false" /> @L["OutputNewQuery"]</label>
+            <label class="check"><input type="radio" name="gs-out" checked="@toFile" @onchange="() => toFile = true" /> @L["OutputFile"]</label>
+        </div>
+
+        @if (generating)
+        {
+            <div class="run-head"><span class="spinner"></span> <span>@L["Generating"]</span> <bdi class="mono muted">@progress</bdi></div>
+        }
+
+        @if (Error is not null)
+        {
+            <div class="status error"><bdi>@Error</bdi></div>
+        }
+    </ChildContent>
+    <Footer>
+        <span class="spacer"></span>
+        <button class="btn" @onclick="Close" disabled="@generating">@L["Cancel"]</button>
+        <button class="btn primary" @onclick="GenerateAsync" disabled="@(generating || (selectObjects && chosen.Count == 0))">@L["Generate"]</button>
+    </Footer>
+</ModalFrame>
+
+@code {
+    [Parameter, EditorRequired] public ManagedServer Server { get; set; } = default!;
+    [Parameter, EditorRequired] public string Database { get; set; } = default!;
+
+    private bool selectObjects;
+    private List<(string Type, string Schema, string Name)>? objects;
+    private readonly HashSet<string> chosen = new(StringComparer.OrdinalIgnoreCase);
+    private string filter = string.Empty;
+    private bool tables = true, views = true, procedures = true, functions = true, triggers = true, synonyms = true;
+    private bool data;
+    private int maxRows = 1000;
+    private bool dropFirst;
+    private bool useDatabase = true;
+    private bool toFile;
+    private bool generating;
+    private string? progress;
+
+    private IEnumerable<(string Type, string Schema, string Name)> VisibleObjects => (objects ?? [])
+        .Where(o => string.IsNullOrWhiteSpace(filter) || $"{o.Schema}.{o.Name}".Contains(filter.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private string TypeLabel(string type) => type switch
+    {
+        "U" => L["FolderTables"],
+        "V" => L["FolderViews"],
+        "P" => L["FolderProcedures"],
+        "SN" => L["FolderSynonyms"],
+        _ => L["FolderFunctions"]
+    };
+
+    private async Task SelectObjectsAsync()
+    {
+        selectObjects = true;
+        if (objects is not null)
+            return;
+        try
+        {
+            objects = await Schema.GetScriptableObjectsAsync(Server, Database);
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+            objects = [];
+        }
+    }
+
+    private void Toggle(string key, bool on)
+    {
+        if (on)
+            chosen.Add(key);
+        else
+            chosen.Remove(key);
+    }
+
+    private void SetAll(bool on)
+    {
+        foreach (var item in VisibleObjects)
+            Toggle($"{item.Schema}.{item.Name}", on);
+    }
+
+    private async Task GenerateAsync()
+    {
+        generating = true;
+        Error = null;
+        StateHasChanged();
+        try
+        {
+            var options = new GenerateScriptOptions(tables, views, procedures, functions, triggers, synonyms, data, Math.Max(maxRows, 1), dropFirst, useDatabase,
+                selectObjects ? chosen : null);
+            var script = await Schema.GenerateScriptAsync(Server, Database, options, item =>
+            {
+                progress = item;
+                _ = InvokeAsync(StateHasChanged);
+            });
+
+            if (toFile)
+            {
+                await JS.InvokeVoidAsync("sqlManager.download", $"{Database}_{DateTime.Now:yyyyMMdd_HHmmss}.sql", "﻿" + script, "text/plain;charset=utf-8");
+                Session.CloseDialog();
+            }
+            else
+            {
+                Session.OpenQuery(Server, Database, script);
+                Session.CloseDialog();
+            }
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+        finally
+        {
+            generating = false;
+        }
+    }
+}

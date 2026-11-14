@@ -1,0 +1,189 @@
+@using System.Text
+@inherits SqlDialogBase
+@inject AdminService Admin
+@inject ExplorerService Explorer
+
+<ModalFrame Title="@L["BackUpDatabase"]" Subject="@Server.DisplayName" IconName="backup" Size="lg" Busy="@Run.IsRunning" OnClose="Close">
+    <ChildContent>
+        @if (browsing)
+        {
+            <ServerFileBrowser Server="Server" Mode="FileBrowserMode.Save" InitialPath="@path" Extensions='new[] { ".bak", ".trn" }'
+                               OnPick="p => { path = p; browsing = false; }" OnCancel="() => browsing = false" />
+        }
+        else
+        {
+            <div class="form-grid">
+                <label class="form-label" for="bk-db">@L["Database"]</label>
+                <select id="bk-db" class="input mono" dir="ltr" value="@Database" @onchange="e => SelectDatabaseAsync(e.Value as string)" disabled="@Run.IsRunning">
+                    @foreach (var db in databases)
+                    {
+                        <option value="@db" selected="@(db == Database)">@db</option>
+                    }
+                </select>
+
+                <label class="form-label">@L["RecoveryModel"]</label>
+                <div class="mono">@(recoveryModel ?? "—")</div>
+
+                <label class="form-label" for="bk-type">@L["BackupType"]</label>
+                <select id="bk-type" class="input" value="@type" @onchange="e => SetType(e.Value as string)" disabled="@Run.IsRunning">
+                    <option value="FULL">@L["BackupFull"]</option>
+                    <option value="DIFF" disabled="@(Database == "master")">@L["BackupDifferential"]</option>
+                    <option value="LOG" disabled="@(recoveryModel == "SIMPLE")">@L["BackupLog"]</option>
+                </select>
+
+                <div></div>
+                <label class="check"><input type="checkbox" @bind="copyOnly" disabled="@(Run.IsRunning || type == "DIFF")" /> @L["CopyOnly"]</label>
+
+                <label class="form-label" for="bk-path">@L["BackupTo"]</label>
+                <div class="path-cell">
+                    <input id="bk-path" class="input mono" dir="ltr" @bind="path" @bind:event="oninput" disabled="@Run.IsRunning" />
+                    <button class="btn sm" @onclick="() => browsing = true" disabled="@Run.IsRunning">@L["Browse"]</button>
+                </div>
+
+                <label class="form-label" for="bk-name">@L["BackupSetName"]</label>
+                <input id="bk-name" class="input" @bind="setName" @bind:event="oninput" disabled="@Run.IsRunning" />
+
+                <label class="form-label">@L["ExistingMedia"]</label>
+                <div class="radio-row">
+                    <label class="check"><input type="radio" name="bk-media" checked="@(!overwrite)" @onchange="() => overwrite = false" /> @L["AppendToMedia"]</label>
+                    <label class="check"><input type="radio" name="bk-media" checked="@overwrite" @onchange="() => overwrite = true" /> @L["OverwriteMedia"]</label>
+                </div>
+
+                <label class="form-label" for="bk-comp">@L["Compression"]</label>
+                <select id="bk-comp" class="input" @bind="compression" disabled="@Run.IsRunning">
+                    <option value="">@L["ServerDefault"]</option>
+                    <option value="ON">@L["CompressBackup"]</option>
+                    <option value="OFF">@L["DoNotCompress"]</option>
+                </select>
+
+                <div></div>
+                <div class="check-list">
+                    <label class="check"><input type="checkbox" @bind="checksum" disabled="@Run.IsRunning" /> @L["PerformChecksum"]</label>
+                    <label class="check"><input type="checkbox" @bind="verify" disabled="@Run.IsRunning" /> @L["VerifyBackup"]</label>
+                </div>
+            </div>
+
+            <p class="hint">@L["BackupPathHint"]</p>
+
+            @if (Error is not null)
+            {
+                <div class="status error">@Error</div>
+            }
+
+            <SqlPreview Sql="@BuildSql()" />
+            <RunLog Run="Run" />
+        }
+    </ChildContent>
+    <Footer>
+        <button class="btn" @onclick="() => ScriptToQuery(Server, null, BuildSql())" disabled="@(Run.IsRunning || !IsValid)"><Icon Name="query" /> @L["ScriptToNewQuery"]</button>
+        <span class="spacer"></span>
+        @if (Run.IsRunning)
+        {
+            <button class="btn" @onclick="Run.Cancel">@L["Stop"]</button>
+        }
+        else if (Run.Succeeded)
+        {
+            <button class="btn primary" @onclick="Close">@L["Close"]</button>
+        }
+        else
+        {
+            <button class="btn" @onclick="Close">@L["Cancel"]</button>
+            <button class="btn primary" @onclick="BackupAsync" disabled="@(!IsValid)">@L["BackUp"]</button>
+        }
+    </Footer>
+</ModalFrame>
+
+@code {
+    [Parameter, EditorRequired] public ManagedServer Server { get; set; } = default!;
+    [Parameter] public string Database { get; set; } = "master";
+
+    private List<string> databases = [];
+    private string? recoveryModel;
+    private string type = "FULL";
+    private bool copyOnly;
+    private string path = string.Empty;
+    private string folder = string.Empty;
+    private string setName = string.Empty;
+    private bool overwrite;
+    private string compression = string.Empty;
+    private bool checksum;
+    private bool verify = true;
+    private bool browsing;
+
+    private bool IsValid => !string.IsNullOrWhiteSpace(path) && !string.IsNullOrWhiteSpace(Database);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            databases = await Explorer.GetDatabaseNamesAsync(Server);
+            databases.Remove("tempdb");
+            folder = (await Admin.GetDefaultPathsAsync(Server)).Backup;
+            await SelectDatabaseAsync(Database);
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+    }
+
+    private async Task SelectDatabaseAsync(string? database)
+    {
+        Database = database ?? "master";
+        recoveryModel = await Db.ScalarAsync(Server.Master, "SELECT recovery_model_desc FROM sys.databases WHERE name = @db", ("@db", Database)) as string;
+        if (type == "LOG" && recoveryModel == "SIMPLE")
+            type = "FULL";
+        UpdateDefaults();
+    }
+
+    private void SetType(string? value)
+    {
+        type = value ?? "FULL";
+        if (type == "DIFF")
+            copyOnly = false;
+        UpdateDefaults();
+    }
+
+    private void UpdateDefaults()
+    {
+        var kind = type switch { "DIFF" => "Differential", "LOG" => "Log", _ => "Full" };
+        setName = $"{Database}-{kind} Database Backup";
+        var directory = string.IsNullOrEmpty(path) ? folder : AdminService.DirectoryOf(path);
+        path = $"{directory}{Database}_{kind}_{DateTime.Now:yyyyMMdd_HHmmss}.{(type == "LOG" ? "trn" : "bak")}";
+    }
+
+    private string BuildSql()
+    {
+        if (!IsValid)
+            return string.Empty;
+
+        var db = Sql.Q(Database);
+        var options = new List<string>();
+        if (type == "DIFF") options.Add("DIFFERENTIAL");
+        if (copyOnly) options.Add("COPY_ONLY");
+        options.Add(overwrite ? "INIT" : "NOINIT");
+        options.Add($"NAME = {Sql.Lit(setName)}");
+        if (compression == "ON") options.Add("COMPRESSION");
+        if (compression == "OFF") options.Add("NO_COMPRESSION");
+        if (checksum) options.Add("CHECKSUM");
+        options.Add("STATS = 10");
+
+        var sb = new StringBuilder();
+        sb.Append($"BACKUP {(type == "LOG" ? "LOG" : "DATABASE")} {db}\nTO DISK = {Sql.Lit(path.Trim())}\nWITH {string.Join(", ", options)};\nGO\n");
+        if (verify)
+        {
+            var name = Sql.Lit(Database);
+            sb.Append($"DECLARE @position int = (SELECT position FROM msdb.dbo.backupset WHERE database_name = {name}\n");
+            sb.Append($"    AND backup_set_id = (SELECT MAX(backup_set_id) FROM msdb.dbo.backupset WHERE database_name = {name}));\n");
+            sb.Append($"RESTORE VERIFYONLY FROM DISK = {Sql.Lit(path.Trim())} WITH FILE = @position{(checksum ? ", CHECKSUM" : "")};\nGO\n");
+        }
+
+        return sb.ToString();
+    }
+
+    private async Task BackupAsync()
+    {
+        if (await RunSqlAsync(Server, "master", BuildSql()))
+            Session.Toast(L["BackupCompleted"]);
+    }
+}

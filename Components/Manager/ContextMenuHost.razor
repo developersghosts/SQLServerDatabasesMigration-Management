@@ -1,0 +1,68 @@
+@using System.Globalization
+@inherits LocalizedComponentBase
+@inject ManagerSession Session
+@inject IJSRuntime JS
+
+@if (Session.Menu is { } menu)
+{
+    <div class="ctx-backdrop" @onclick="Close" @oncontextmenu="Close" @oncontextmenu:preventDefault="true"></div>
+    <div class="ctx-menu" @ref="element" role="menu" tabindex="-1" @onkeydown="OnKey"
+         style="left: @Px(menu.X); top: @Px(menu.Y)">
+        <MenuList Items="menu.Items" OnPick="PickAsync" />
+    </div>
+}
+
+@code {
+    private ElementReference element;
+    private string? shownId;
+
+    protected override void OnInitialized() => Session.Changed += OnChanged;
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    private static string Px(double value) => value.ToString("0", CultureInfo.InvariantCulture) + "px";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (Session.Menu is { } menu && menu.Id != shownId)
+        {
+            shownId = menu.Id;
+            await JS.InvokeVoidAsync("sqlManager.clampToViewport", element);
+            await JS.InvokeVoidAsync("sqlManager.focus", element);
+        }
+        else if (Session.Menu is null)
+        {
+            shownId = null;
+        }
+    }
+
+    private void Close() => Session.CloseMenu();
+
+    private void OnKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape")
+            Session.CloseMenu();
+    }
+
+    private async Task PickAsync(MenuItem item)
+    {
+        Session.CloseMenu();
+        if (item.Action is null)
+            return;
+
+        try
+        {
+            await item.Action();
+        }
+        catch (Exception ex)
+        {
+            Session.Toast(ex.Message, ToastKind.Error);
+        }
+    }
+
+    public override void Dispose()
+    {
+        Session.Changed -= OnChanged;
+        base.Dispose();
+    }
+}

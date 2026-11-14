@@ -1,0 +1,177 @@
+@page "/manager"
+@using System.Data
+@using Microsoft.Data.SqlClient
+@inherits LocalizedComponentBase
+@inject ManagerSession Session
+@inject ManagerActions Actions
+@inject IJSRuntime JS
+
+<PageTitle>@L["ModeManager"] · @L["AppName"]</PageTitle>
+
+<div class="mgr">
+    <aside class="mgr-explorer" @ref="explorer">
+        <ObjectExplorer />
+    </aside>
+    <div class="splitter-x" @ref="splitter" role="separator" aria-orientation="vertical"></div>
+
+    <section class="mgr-workspace">
+        @if (Session.Tabs.Count > 0)
+        {
+            <div class="tab-strip" role="tablist">
+                @foreach (var tab in Session.Tabs)
+                {
+                    var active = tab == Session.ActiveTab;
+                    <div class="ws-tab @(active ? "active" : null)" role="tab" aria-selected="@(active ? "true" : "false")" tabindex="0"
+                         title="@Tooltip(tab)" @key="tab.Id"
+                         @onclick="() => Session.Activate(tab)"
+                         @onmouseup="e => OnTabMouseUp(e, tab)">
+                        <Icon Name="@tab.Icon" />
+                        <span class="ws-tab-title"><bdi>@tab.Title(L)</bdi></span>
+                        @if (tab is QueryTab { IsRunning: true })
+                        {
+                            <span class="spinner tiny"></span>
+                        }
+                        <button class="ws-tab-close" title="@L["Close"]" aria-label="@L["Close"]" @onclick="() => CloseAsync(tab)" @onclick:stopPropagation="true"><Icon Name="close" /></button>
+                    </div>
+                }
+            </div>
+
+            @foreach (var tab in Session.Tabs)
+            {
+                <div class="tab-pane" hidden="@(tab != Session.ActiveTab)" @key="tab.Id">
+                    <DynamicComponent Type="@ViewFor(tab)" Parameters="@ParametersFor(tab)" />
+                </div>
+            }
+        }
+        else
+        {
+            <div class="welcome">
+                <div class="welcome-card">
+                    <div class="welcome-mark"><Icon Name="database" /></div>
+                    <h1>@L["WelcomeTitle"]</h1>
+                    <p class="lead">@L["WelcomeLead"]</p>
+                    <div class="welcome-actions">
+                        <button class="btn primary" @onclick="Connect"><Icon Name="plug" /> @L["ConnectToServer"]</button>
+                        @if (Session.Roots.Count > 0)
+                        {
+                            var server = (Session.Selected ?? Session.Roots[0]).Server;
+                            <button class="btn" @onclick="() => Session.OpenQuery(server, Session.Selected?.Database)"><Icon Name="query" /> @L["NewQuery"]</button>
+                            <button class="btn" @onclick="() => Actions.NewDatabase(server)"><Icon Name="database" /> @L["NewDatabase"]</button>
+                            <button class="btn" @onclick="() => Actions.Restore(server, null)"><Icon Name="backup" /> @L["RestoreDatabase"]</button>
+                            <button class="btn" @onclick="() => Actions.ActivityMonitor(server)"><Icon Name="activity" /> @L["ActivityMonitor"]</button>
+                        }
+                    </div>
+                    <ul class="welcome-tips">
+                        <li>@L["TipRightClick"]</li>
+                        <li><kbd>F5</kbd> / <kbd>Ctrl</kbd>+<kbd>E</kbd> @L["TipExecute"]</li>
+                        <li><kbd>Ctrl</kbd>+<kbd>F5</kbd> @L["TipParse"] · <kbd>Ctrl</kbd>+<kbd>/</kbd> @L["TipComment"] · <kbd>Ctrl</kbd>+<kbd>S</kbd> @L["TipSave"]</li>
+                        <li>@L["TipGo"]</li>
+                    </ul>
+                </div>
+            </div>
+        }
+    </section>
+</div>
+
+@if (Session.Dialog is { } dialog)
+{
+    <DynamicComponent @key="dialog.Id" Type="dialog.Component" Parameters="dialog.Parameters" />
+}
+
+<ContextMenuHost />
+<ToastHost />
+
+@code {
+    private ElementReference explorer;
+    private ElementReference splitter;
+    private bool? unloadGuard;
+    private readonly Dictionary<string, IDictionary<string, object>> parameters = [];
+
+    protected override void OnInitialized() => Session.Changed += OnChanged;
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    private static Type ViewFor(WorkspaceTab tab) => tab switch
+    {
+        QueryTab => typeof(QueryTabView),
+        TableDesignTab => typeof(TableDesignerView),
+        EditDataTab => typeof(DataEditorView),
+        DatabasePropertiesTab => typeof(DatabasePropertiesView),
+        ServerPropertiesTab => typeof(ServerPropertiesView),
+        ActivityMonitorTab => typeof(ActivityMonitorView),
+        _ => throw new NotSupportedException(tab.GetType().Name)
+    };
+
+    private IDictionary<string, object> ParametersFor(WorkspaceTab tab)
+    {
+        if (!parameters.TryGetValue(tab.Id, out var value))
+            parameters[tab.Id] = value = new Dictionary<string, object> { ["Tab"] = tab };
+        return value;
+    }
+
+    private static string Tooltip(WorkspaceTab tab) =>
+        $"{tab.Server.DisplayName}{(tab.Database is null ? "" : " / " + tab.Database)}";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await JS.InvokeVoidAsync("sqlManager.initSplitter", splitter, explorer, "x", "mgr-explorer-width", 200, 800);
+
+            // Like SSMS, ask for a server when nothing is connected yet
+            if (!Session.ConnectPromptShown && Session.Roots.Count == 0)
+            {
+                Session.ConnectPromptShown = true;
+                Connect();
+            }
+        }
+
+        var guard = Session.Tabs.Count > 0;
+        if (guard != unloadGuard)
+        {
+            unloadGuard = guard;
+            await JS.InvokeVoidAsync("sqlManager.setUnloadGuard", guard);
+        }
+    }
+
+    private void Connect() => Session.ShowDialog(typeof(ConnectDialog), new Dictionary<string, object>());
+
+    private async Task OnTabMouseUp(MouseEventArgs e, WorkspaceTab tab)
+    {
+        // Middle click closes, as in SSMS
+        if (e.Button == 1)
+            await CloseAsync(tab);
+    }
+
+    private async Task CloseAsync(WorkspaceTab tab)
+    {
+        if (tab is QueryTab query)
+        {
+            if (query.IsRunning && !await JS.InvokeAsync<bool>("confirm", L["ConfirmCloseRunning"]))
+                return;
+
+            if (!query.IsRunning && query.Connection is { State: ConnectionState.Open } connection)
+            {
+                try
+                {
+                    await using var command = new SqlCommand("SELECT @@TRANCOUNT", connection);
+                    if (Convert.ToInt32(await command.ExecuteScalarAsync()) > 0 &&
+                        !await JS.InvokeAsync<bool>("confirm", L["ConfirmCloseTransaction"]))
+                        return;
+                }
+                catch (Exception)
+                {
+                }
+            }
+        }
+
+        parameters.Remove(tab.Id);
+        await Session.CloseTabAsync(tab);
+    }
+
+    public override void Dispose()
+    {
+        Session.Changed -= OnChanged;
+        base.Dispose();
+    }
+}

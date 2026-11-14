@@ -1,0 +1,62 @@
+﻿@page "/"
+@inherits LocalizedComponentBase
+@inject MigrationSession Session
+@inject NavigationManager Navigation
+
+<PageTitle>@L["StepConnections"] · @L["AppName"]</PageTitle>
+
+<div class="page-head">
+    <h1>@L["HomeTitle"]</h1>
+    <p class="lead">@L["HomeLead"]</p>
+</div>
+
+<div class="two-col">
+    <ConnectionCard @ref="sourceCard" Role="DatabaseRole.Source" Connection="Session.Source" OnStatusChanged="OnStatusChanged" />
+    <ConnectionCard @ref="destinationCard" Role="DatabaseRole.Destination" Connection="Session.Destination" OnStatusChanged="OnStatusChanged" />
+</div>
+
+@if (Session.IsSameDatabase)
+{
+    <div class="banner warn">@L["SameDatabaseWarning"]</div>
+}
+
+<div class="page-actions">
+    <button class="btn primary" @onclick="ContinueAsync" disabled="@(isContinuing || !BothFilled)">
+        @(isContinuing ? L["Connecting"] : L["NextTables"])
+    </button>
+</div>
+
+@code {
+    private ConnectionCard sourceCard = default!;
+    private ConnectionCard destinationCard = default!;
+    private bool isContinuing;
+
+    private bool BothFilled =>
+        !string.IsNullOrWhiteSpace(Session.Source.ConnectionString) &&
+        !string.IsNullOrWhiteSpace(Session.Destination.ConnectionString);
+
+    private void OnStatusChanged()
+    {
+        Session.NotifyChanged();
+        StateHasChanged();
+    }
+
+    private async Task ContinueAsync()
+    {
+        isContinuing = true;
+        try
+        {
+            var tests = new List<Task<bool>>();
+            if (!Session.Source.IsConnected) tests.Add(sourceCard.TestAsync());
+            if (!Session.Destination.IsConnected) tests.Add(destinationCard.TestAsync());
+            await Task.WhenAll(tests);
+        }
+        finally
+        {
+            isContinuing = false;
+        }
+
+        if (Session.IsReady)
+            Navigation.NavigateTo("tables");
+    }
+}

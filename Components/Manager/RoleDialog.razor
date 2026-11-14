@@ -1,0 +1,154 @@
+@inherits SqlDialogBase
+@inject AdminService Admin
+
+<ModalFrame Title="@(IsNew ? L["NewRole"] : L["RoleProperties"])" Subject="@($"{Node.Database}{(IsNew ? "" : " / " + Name)}")" IconName="role" Size="md" Busy="@Run.IsRunning" OnClose="Close">
+    <ChildContent>
+        @if (loading)
+        {
+            <div class="empty">@L["Loading"]</div>
+        }
+        else
+        {
+            <div class="form-grid">
+                <label class="form-label" for="rl-name">@L["RoleName"] *</label>
+                <input id="rl-name" class="input mono" dir="ltr" @bind="roleName" @bind:event="oninput" disabled="@(!IsNew || Run.IsRunning)" />
+
+                @if (!IsFixed)
+                {
+                    <label class="form-label" for="rl-owner">@L["Owner"]</label>
+                    <select id="rl-owner" class="input mono" dir="ltr" @bind="owner">
+                        <option value="">@L["DefaultOption"]</option>
+                        @foreach (var (principal, _) in principals)
+                        {
+                            <option value="@principal">@principal</option>
+                        }
+                    </select>
+                }
+            </div>
+
+            <h3 class="section-title">@L["RoleMembers"]</h3>
+            <div class="check-grid">
+                @foreach (var (principal, type) in principals.Where(p => p.Name != roleName))
+                {
+                    <label class="check">
+                        <input type="checkbox" checked="@members.Contains(principal)" @onchange="e => Toggle(principal, e.Value is true)" />
+                        <bdi class="mono">@principal</bdi>
+                        @if (type == "R")
+                        {
+                            <span class="badge pending">@L["Role"]</span>
+                        }
+                    </label>
+                }
+            </div>
+
+            @if (Error is not null)
+            {
+                <div class="status error">@Error</div>
+            }
+
+            <SqlPreview Sql="@BuildSql()" />
+            <RunLog Run="Run" />
+        }
+    </ChildContent>
+    <Footer>
+        <button class="btn" @onclick="() => ScriptToQuery(Node.Server, Node.Database, BuildSql())" disabled="@Run.IsRunning"><Icon Name="query" /> @L["ScriptToNewQuery"]</button>
+        <span class="spacer"></span>
+        @if (Run.IsRunning)
+        {
+            <button class="btn" @onclick="Run.Cancel">@L["Stop"]</button>
+        }
+        else
+        {
+            <button class="btn" @onclick="Close">@L["Cancel"]</button>
+            <button class="btn primary" @onclick="SaveAsync" disabled="@loading">@L["OK"]</button>
+        }
+    </Footer>
+</ModalFrame>
+
+@code {
+    [Parameter, EditorRequired] public ExplorerNode Node { get; set; } = default!;
+    [Parameter] public string? Name { get; set; }
+
+    private bool IsNew => Name is null;
+    private bool IsFixed => !IsNew && Node.IsSystem;
+
+    private string roleName = string.Empty;
+    private string owner = string.Empty;
+    private string? originalOwner;
+    private List<(string Name, string Type)> principals = [];
+    private HashSet<string> originalMembers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> members = new(StringComparer.OrdinalIgnoreCase);
+    private bool loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var db = Node.Database!;
+            principals = await Admin.GetPrincipalsAsync(Node.Server, db);
+            if (!IsNew)
+            {
+                roleName = Name!;
+                originalOwner = await Admin.GetRoleOwnerAsync(Node.Server, db, roleName);
+                owner = originalOwner ?? string.Empty;
+                originalMembers = new HashSet<string>(await Admin.GetRoleMembersAsync(Node.Server, db, roleName), StringComparer.OrdinalIgnoreCase);
+                foreach (var member in originalMembers)
+                    members.Add(member);
+            }
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void Toggle(string principal, bool on)
+    {
+        if (on)
+            members.Add(principal);
+        else
+            members.Remove(principal);
+    }
+
+    private string BuildSql()
+    {
+        var role = roleName.Trim();
+        if (role.Length == 0)
+            return string.Empty;
+
+        var statements = new List<string>();
+        if (IsNew)
+            statements.Add($"CREATE ROLE {Sql.Q(role)}{(owner.Length > 0 ? $" AUTHORIZATION {Sql.Q(owner)}" : "")};");
+        else if (!IsFixed && owner.Length > 0 && !string.Equals(owner, originalOwner, StringComparison.OrdinalIgnoreCase))
+            statements.Add($"ALTER AUTHORIZATION ON ROLE::{Sql.Q(role)} TO {Sql.Q(owner)};");
+
+        statements.AddRange(members.Where(m => !originalMembers.Contains(m)).Select(m => AdminService.AddRoleMember(Node.Server, role, m)));
+        statements.AddRange(originalMembers.Where(m => !members.Contains(m)).Select(m => AdminService.DropRoleMember(Node.Server, role, m)));
+        return string.Join("\n", statements);
+    }
+
+    private async Task SaveAsync()
+    {
+        if (string.IsNullOrWhiteSpace(roleName))
+        {
+            Error = string.Format(L["FieldRequired"], L["RoleName"]);
+            return;
+        }
+
+        var sql = BuildSql();
+        if (sql.Length == 0)
+        {
+            Session.CloseDialog();
+            return;
+        }
+
+        if (!await RunSqlAsync(Node.Server, Node.Database, sql))
+            return;
+        await Session.RefreshAsync(IsNew ? Node : Node.Parent);
+        Finish();
+    }
+}

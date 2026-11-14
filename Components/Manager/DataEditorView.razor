@@ -1,0 +1,269 @@
+@inherits LocalizedComponentBase
+@inject ManagerSession Session
+@inject TableDataService Data
+@inject IJSRuntime JS
+
+<div class="view">
+    <div class="view-head">
+        <div class="view-title">
+            <Icon Name="edit" />
+            <h2>@L["EditRows"]</h2>
+            <bdi class="mono muted">@($"{Tab.Database}.{Sql.Q(Tab.Schema, Tab.Name)}")</bdi>
+        </div>
+        <div class="view-actions">
+            <button class="btn sm" @onclick="ReloadAsync" disabled="@busy"><Icon Name="refresh" /> @L["Refresh"]</button>
+            <button class="btn sm" @onclick="AddRow" disabled="@(busy || state.Data is not { CanEdit: true })"><Icon Name="plus" /> @L["AddRow"]</button>
+            <button class="btn sm" @onclick="DiscardAsync" disabled="@(busy || Pending == 0)">@L["DiscardChanges"]</button>
+            <button class="btn sm primary" @onclick="SaveAsync" disabled="@(busy || Pending == 0)">
+                <Icon Name="save" /> @L["SaveChanges"] @if (Pending > 0) { <span class="count">@Pending</span> }
+            </button>
+        </div>
+    </div>
+
+    <div class="filter-bar" dir="ltr">
+        <label class="tb-label">SELECT TOP</label>
+        <input class="input sm mono narrow" type="number" min="1" max="100000" @bind="state.Top" />
+        <label class="tb-label">WHERE</label>
+        <input class="input sm mono grow" @bind="state.Where" @bind:event="oninput" placeholder="[Id] > 100" @onkeydown="OnFilterKey" />
+        <label class="tb-label">ORDER BY</label>
+        <input class="input sm mono grow" @bind="state.OrderBy" @bind:event="oninput" placeholder="[Id] DESC" @onkeydown="OnFilterKey" />
+        <button class="btn sm" @onclick="ReloadAsync" disabled="@busy">@L["Apply"]</button>
+    </div>
+
+    @if (error is not null)
+    {
+        <div class="status error"><bdi>@error</bdi></div>
+    }
+
+    @if (state.Data is { } data)
+    {
+        @if (!data.CanEdit)
+        {
+            <div class="banner warn">@L["ReadOnlyNoKey"]</div>
+        }
+        else if (data.MatchesAllColumns)
+        {
+            <div class="banner info">@L["NoKeyMatchAll"]</div>
+        }
+
+        <div class="grid-scroll grow">
+            <table class="grid edit-grid" dir="ltr">
+                <thead>
+                    <tr>
+                        <th class="row-state"></th>
+                        @foreach (var column in data.Columns)
+                        {
+                            <th title="@ColumnTitle(column)">
+                                @if (column.IsKey)
+                                {
+                                    <Icon Name="key" Class="c-key" />
+                                }
+                                @column.Name
+                                <span class="col-type">@column.TypeDisplay</span>
+                            </th>
+                        }
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @for (var r = 0; r < data.Rows.Count; r++)
+                    {
+                        var row = data.Rows[r];
+                        <tr class="state-@row.State.ToString().ToLowerInvariant() @(row.Error is not null ? "has-error" : null)" @key="row">
+                            <td class="row-state" title="@StateTitle(row)">@StateMark(row)</td>
+                            @for (var c = 0; c < data.Columns.Count; c++)
+                            {
+                                var column = c;
+                                var meta = data.Columns[column];
+                                var value = row.Values[column];
+                                var locked = meta.IsReadOnly || row.State == EditRowState.Deleted || !data.CanEdit;
+                                <td class="@(row.Changed[column] ? "changed" : null)">
+                                    <input class="cell @(value is null ? "is-null" : null) @(meta.IsText ? null : "mono")"
+                                           dir="@(meta.IsText ? "auto" : "ltr")"
+                                           value="@value"
+                                           placeholder="@(value is null ? (row.State == EditRowState.Added && meta.IsReadOnly ? L["AutoValue"] : "NULL") : null)"
+                                           readonly="@locked"
+                                           title="@(meta.IsReadOnly ? L["ReadOnlyColumn"] : null)"
+                                           @onchange="e => SetValue(row, column, e.Value as string)" />
+                                </td>
+                            }
+                            <td class="row-actions">
+                                @if (row.State == EditRowState.Deleted)
+                                {
+                                    <button class="btn xs" @onclick="() => Undelete(row)">@L["Undo"]</button>
+                                }
+                                else if (data.CanEdit)
+                                {
+                                    <button class="icon-btn danger" title="@L["DeleteRow"]" @onclick="() => DeleteRow(row)"><Icon Name="close" /></button>
+                                }
+                            </td>
+                        </tr>
+                        @if (row.Error is not null)
+                        {
+                            <tr class="row-error-line"><td></td><td colspan="@(data.Columns.Count + 1)"><bdi>@row.Error</bdi></td></tr>
+                        }
+                    }
+                    @if (data.Rows.Count == 0)
+                    {
+                        <tr><td colspan="@(data.Columns.Count + 2)" class="empty">@L["NoRows"]</td></tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="view-foot muted">
+            <span><bdi>@data.Rows.Count.ToString("N0")</bdi> @L["RowsCount"]</span>
+            <span>@L["NullTip"]</span>
+            <details class="inline-sql">
+                <summary>SQL</summary>
+                <pre dir="ltr">@data.SelectSql</pre>
+            </details>
+        </div>
+    }
+    else if (busy)
+    {
+        <div class="empty">@L["Loading"]</div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public EditDataTab Tab { get; set; } = default!;
+
+    private sealed class EditorState
+    {
+        public EditData? Data { get; set; }
+        public int Top { get; set; } = 200;
+        public string? Where { get; set; }
+        public string? OrderBy { get; set; }
+    }
+
+    private EditorState state = new();
+    private bool busy;
+    private string? error;
+
+    private int Pending => state.Data?.PendingChanges ?? 0;
+
+    private static string ColumnTitle(EditColumn column) => column.TypeDisplay + (column.IsNullable ? " NULL" : " NOT NULL");
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Tab.State is EditorState saved)
+        {
+            state = saved;
+            return;
+        }
+
+        Tab.State = state;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        busy = true;
+        error = null;
+        StateHasChanged();
+        try
+        {
+            state.Data = await Data.LoadAsync(Tab.Server, Tab.Database!, Tab.Schema, Tab.Name, Math.Clamp(state.Top, 1, 100_000), state.Where, state.OrderBy);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (Pending > 0 && !await JS.InvokeAsync<bool>("confirm", L["DiscardConfirm"]))
+            return;
+        await LoadAsync();
+    }
+
+    private async Task DiscardAsync() => await LoadAsync();
+
+    private async Task OnFilterKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await ReloadAsync();
+        }
+    }
+
+    private void SetValue(EditRow row, int column, string? text)
+    {
+        row.Values[column] = text == "NULL" ? null : text;
+        row.Changed[column] = true;
+        row.Error = null;
+        if (row.State == EditRowState.Unchanged)
+            row.State = EditRowState.Modified;
+    }
+
+    private void AddRow()
+    {
+        if (state.Data is { } data)
+            data.Rows.Add(Data.NewRow(data));
+    }
+
+    private void DeleteRow(EditRow row)
+    {
+        if (row.State == EditRowState.Added)
+            state.Data!.Rows.Remove(row);
+        else
+            row.State = EditRowState.Deleted;
+    }
+
+    private static void Undelete(EditRow row) =>
+        row.State = row.Changed.Any(c => c) ? EditRowState.Modified : EditRowState.Unchanged;
+
+    private static string StateMark(EditRow row) => row.State switch
+    {
+        EditRowState.Added => "＋",
+        EditRowState.Modified => "✎",
+        EditRowState.Deleted => "✕",
+        _ => ""
+    };
+
+    private string? StateTitle(EditRow row) => row.State switch
+    {
+        EditRowState.Added => L["RowAdded"],
+        EditRowState.Modified => L["RowModified"],
+        EditRowState.Deleted => L["RowDeleted"],
+        _ => null
+    };
+
+    private async Task SaveAsync()
+    {
+        if (state.Data is not { } data)
+            return;
+
+        busy = true;
+        error = null;
+        foreach (var row in data.Rows)
+            row.Error = null;
+
+        try
+        {
+            var saved = await Data.SaveAsync(Tab.Server, Tab.Database!, Tab.Schema, Tab.Name, data);
+            Session.Toast(string.Format(L["RowsSaved"], saved));
+            await LoadAsync();
+        }
+        catch (RowSaveException ex)
+        {
+            if (ex.RowIndex < data.Rows.Count)
+                data.Rows[ex.RowIndex].Error = ex.Message;
+            error = L["SaveRowsFailed"];
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+}

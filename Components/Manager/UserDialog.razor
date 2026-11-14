@@ -1,0 +1,197 @@
+@inherits SqlDialogBase
+@inject AdminService Admin
+
+<ModalFrame Title="@(IsNew ? L["NewUser"] : L["UserProperties"])" Subject="@($"{Node.Database}{(IsNew ? "" : " / " + Name)}")" IconName="user" Size="lg" Busy="@Run.IsRunning" OnClose="Close">
+    <ChildContent>
+        @if (loading)
+        {
+            <div class="empty">@L["Loading"]</div>
+        }
+        else
+        {
+            <div class="form-grid">
+                <label class="form-label" for="us-name">@L["UserName"] *</label>
+                <input id="us-name" class="input mono" dir="ltr" @bind="userName" @bind:event="oninput" disabled="@(!IsNew || Run.IsRunning)" />
+
+                <label class="form-label">@L["UserType"]</label>
+                <div class="radio-row">
+                    <label class="check"><input type="radio" name="us-type" checked="@(!withoutLogin)" disabled="@(!IsNew)" @onchange="() => withoutLogin = false" /> @L["UserWithLogin"]</label>
+                    <label class="check"><input type="radio" name="us-type" checked="@withoutLogin" disabled="@(!IsNew)" @onchange="() => withoutLogin = true" /> @L["UserWithoutLogin"]</label>
+                </div>
+
+                @if (!withoutLogin)
+                {
+                    <label class="form-label" for="us-login">@L["LoginName"] *</label>
+                    <select id="us-login" class="input mono" dir="ltr" @bind="login" @bind:after="LoginChanged">
+                        <option value="">—</option>
+                        @foreach (var item in logins)
+                        {
+                            <option value="@item">@item</option>
+                        }
+                    </select>
+                }
+
+                <label class="form-label" for="us-schema">@L["DefaultSchema"]</label>
+                <select id="us-schema" class="input mono" dir="ltr" @bind="defaultSchema">
+                    @foreach (var schema in schemas)
+                    {
+                        <option value="@schema">@schema</option>
+                    }
+                </select>
+            </div>
+
+            <h3 class="section-title">@L["RoleMembership"]</h3>
+            <div class="check-grid">
+                @foreach (var (role, isFixed) in roles)
+                {
+                    <label class="check">
+                        <input type="checkbox" checked="@memberOf.Contains(role)" @onchange="e => Toggle(role, e.Value is true)" />
+                        <bdi class="mono">@role</bdi>
+                        @if (!isFixed)
+                        {
+                            <span class="badge pending">@L["Custom"]</span>
+                        }
+                    </label>
+                }
+            </div>
+
+            @if (Error is not null)
+            {
+                <div class="status error">@Error</div>
+            }
+
+            <SqlPreview Sql="@BuildSql()" />
+            <RunLog Run="Run" />
+        }
+    </ChildContent>
+    <Footer>
+        <button class="btn" @onclick="() => ScriptToQuery(Node.Server, Node.Database, BuildSql())" disabled="@Run.IsRunning"><Icon Name="query" /> @L["ScriptToNewQuery"]</button>
+        <span class="spacer"></span>
+        @if (Run.IsRunning)
+        {
+            <button class="btn" @onclick="Run.Cancel">@L["Stop"]</button>
+        }
+        else
+        {
+            <button class="btn" @onclick="Close">@L["Cancel"]</button>
+            <button class="btn primary" @onclick="SaveAsync" disabled="@loading">@L["OK"]</button>
+        }
+    </Footer>
+</ModalFrame>
+
+@code {
+    /// <summary>The Users folder (new user) or the user node.</summary>
+    [Parameter, EditorRequired] public ExplorerNode Node { get; set; } = default!;
+    [Parameter] public string? Name { get; set; }
+
+    private bool IsNew => Name is null;
+
+    private UserDetails? original;
+    private string userName = string.Empty;
+    private bool withoutLogin;
+    private string login = string.Empty;
+    private string defaultSchema = "dbo";
+    private List<string> logins = [];
+    private List<string> schemas = [];
+    private List<(string Name, bool IsFixed)> roles = [];
+    private readonly HashSet<string> memberOf = new(StringComparer.OrdinalIgnoreCase);
+    private bool loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var db = Node.Database!;
+            logins = await Admin.GetLoginNamesAsync(Node.Server);
+            schemas = await Admin.GetSchemasAsync(Node.Server, db);
+            roles = await Admin.GetDatabaseRolesAsync(Node.Server, db);
+            if (!IsNew)
+            {
+                original = await Admin.GetUserAsync(Node.Server, db, Name!) ?? throw new InvalidOperationException($"{Name} was not found.");
+                userName = original.Name;
+                login = original.Login ?? string.Empty;
+                withoutLogin = original.Login is null;
+                defaultSchema = original.DefaultSchema ?? "dbo";
+                foreach (var role in original.Roles)
+                    memberOf.Add(role);
+            }
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void LoginChanged()
+    {
+        if (IsNew && string.IsNullOrWhiteSpace(userName))
+            userName = login;
+    }
+
+    private void Toggle(string role, bool on)
+    {
+        if (on)
+            memberOf.Add(role);
+        else
+            memberOf.Remove(role);
+    }
+
+    private string BuildSql()
+    {
+        var user = userName.Trim();
+        if (user.Length == 0)
+            return string.Empty;
+
+        var q = Sql.Q(user);
+        var statements = new List<string>();
+        if (IsNew)
+        {
+            var target = withoutLogin ? " WITHOUT LOGIN" : string.IsNullOrEmpty(login) ? "" : $" FOR LOGIN {Sql.Q(login)}";
+            statements.Add($"CREATE USER {q}{target} WITH DEFAULT_SCHEMA = {Sql.Q(defaultSchema)};");
+            statements.AddRange(memberOf.Select(r => AdminService.AddRoleMember(Node.Server, r, user)));
+        }
+        else
+        {
+            var o = original!;
+            if (!string.Equals(defaultSchema, o.DefaultSchema, StringComparison.OrdinalIgnoreCase))
+                statements.Add($"ALTER USER {q} WITH DEFAULT_SCHEMA = {Sql.Q(defaultSchema)};");
+            if (!withoutLogin && !string.IsNullOrEmpty(login) && !string.Equals(login, o.Login, StringComparison.OrdinalIgnoreCase))
+                statements.Add($"ALTER USER {q} WITH LOGIN = {Sql.Q(login)};");
+            statements.AddRange(memberOf.Where(r => !o.Roles.Contains(r, StringComparer.OrdinalIgnoreCase)).Select(r => AdminService.AddRoleMember(Node.Server, r, user)));
+            statements.AddRange(o.Roles.Where(r => !memberOf.Contains(r)).Select(r => AdminService.DropRoleMember(Node.Server, r, user)));
+        }
+
+        return string.Join("\n", statements);
+    }
+
+    private async Task SaveAsync()
+    {
+        if (string.IsNullOrWhiteSpace(userName))
+        {
+            Error = string.Format(L["FieldRequired"], L["UserName"]);
+            return;
+        }
+
+        if (IsNew && !withoutLogin && string.IsNullOrEmpty(login))
+        {
+            Error = string.Format(L["FieldRequired"], L["LoginName"]);
+            return;
+        }
+
+        var sql = BuildSql();
+        if (sql.Length == 0)
+        {
+            Session.CloseDialog();
+            return;
+        }
+
+        if (!await RunSqlAsync(Node.Server, Node.Database, sql))
+            return;
+        await Session.RefreshAsync(IsNew ? Node : Node.Parent);
+        Finish();
+    }
+}

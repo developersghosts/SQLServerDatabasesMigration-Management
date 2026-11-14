@@ -1,0 +1,202 @@
+@using System.Text
+@inherits SqlDialogBase
+@inject SchemaService Schemas
+
+<ModalFrame Title="@L["NewIndex"]" Subject="@($"{Database}.{Schema}.{Table}")" IconName="index" Size="lg" Busy="@Run.IsRunning" OnClose="Close">
+    <ChildContent>
+        @if (table is null)
+        {
+            <div class="empty">@(Error ?? L["Loading"])</div>
+        }
+        else
+        {
+            <div class="form-grid">
+                <label class="form-label" for="ix-name">@L["IndexName"] *</label>
+                <input id="ix-name" class="input mono" dir="ltr" @bind="name" @bind:event="oninput" placeholder="@DefaultName" />
+
+                <label class="form-label" for="ix-type">@L["IndexType"]</label>
+                <select id="ix-type" class="input" @bind="type">
+                    <option value="NONCLUSTERED">NONCLUSTERED</option>
+                    <option value="CLUSTERED" disabled="@HasClustered">CLUSTERED</option>
+                    @if (Server.Major >= 11)
+                    {
+                        <option value="NCCI">NONCLUSTERED COLUMNSTORE</option>
+                    }
+                </select>
+
+                <div></div>
+                <label class="check"><input type="checkbox" @bind="unique" disabled="@(type == "NCCI")" /> @L["UniqueIndex"]</label>
+            </div>
+
+            <h3 class="section-title">@L["IndexKeyColumns"]</h3>
+            <div class="key-columns">
+                @for (var i = 0; i < keys.Count; i++)
+                {
+                    var index = i;
+                    <div class="key-column">
+                        <span class="num muted">@(index + 1)</span>
+                        <bdi class="mono grow">@keys[index].Name</bdi>
+                        @if (type != "NCCI")
+                        {
+                            <select class="input sm" value="@(keys[index].Descending ? "DESC" : "ASC")" @onchange='e => keys[index] = keys[index] with { Descending = (e.Value as string) == "DESC" }'>
+                                <option value="ASC">ASC</option>
+                                <option value="DESC">DESC</option>
+                            </select>
+                        }
+                        <button class="icon-btn" title="@L["MoveUp"]" disabled="@(index == 0)" @onclick="() => Swap(index, index - 1)"><Icon Name="up" /></button>
+                        <button class="icon-btn danger" title="@L["Delete"]" @onclick="() => keys.RemoveAt(index)"><Icon Name="close" /></button>
+                    </div>
+                }
+                <div class="key-column">
+                    <select class="input sm mono grow" dir="ltr" value="" @onchange="e => AddKey(e.Value as string)">
+                        <option value="">@L["AddColumnOption"]</option>
+                        @foreach (var column in table.Columns.Where(c => keys.All(k => k.Name != c.Name)))
+                        {
+                            <option value="@column.Name">@column.Name (@column.TypeSql)</option>
+                        }
+                    </select>
+                </div>
+            </div>
+
+            @if (type == "NONCLUSTERED")
+            {
+                <h3 class="section-title">@L["IncludedColumns"]</h3>
+                <div class="check-grid">
+                    @foreach (var column in table.Columns.Where(c => keys.All(k => k.Name != c.Name) && !c.IsComputed))
+                    {
+                        <label class="check">
+                            <input type="checkbox" checked="@included.Contains(column.Name)" @onchange="e => ToggleIncluded(column.Name, e.Value is true)" />
+                            <bdi class="mono">@column.Name</bdi>
+                        </label>
+                    }
+                </div>
+
+                @if (Server.Major >= 10)
+                {
+                    <div class="form-grid">
+                        <label class="form-label" for="ix-filter">@L["Filter"]</label>
+                        <div>
+                            <input id="ix-filter" class="input mono" dir="ltr" @bind="filter" @bind:event="oninput" placeholder="[Status] = 1" />
+                            <div class="field-hint">@L["FilterHint"]</div>
+                        </div>
+                    </div>
+                }
+            }
+
+            @if (type != "NCCI")
+            {
+                <div class="form-grid">
+                    <label class="form-label" for="ix-ff">@L["FillFactor"]</label>
+                    <input id="ix-ff" class="input narrow" type="number" min="0" max="100" @bind="fillFactor" />
+                </div>
+            }
+
+            @if (Error is not null)
+            {
+                <div class="status error">@Error</div>
+            }
+
+            <SqlPreview Sql="@BuildSql()" Open="true" />
+            <RunLog Run="Run" />
+        }
+    </ChildContent>
+    <Footer>
+        <button class="btn" @onclick="() => ScriptToQuery(Server, Database, BuildSql())" disabled="@(Run.IsRunning || keys.Count == 0)"><Icon Name="query" /> @L["ScriptToNewQuery"]</button>
+        <span class="spacer"></span>
+        @if (Run.IsRunning)
+        {
+            <button class="btn" @onclick="Run.Cancel">@L["Stop"]</button>
+        }
+        else
+        {
+            <button class="btn" @onclick="Close">@L["Cancel"]</button>
+            <button class="btn primary" @onclick="CreateAsync" disabled="@(keys.Count == 0)">@L["Create"]</button>
+        }
+    </Footer>
+</ModalFrame>
+
+@code {
+    [Parameter, EditorRequired] public ManagedServer Server { get; set; } = default!;
+    [Parameter, EditorRequired] public string Database { get; set; } = default!;
+    [Parameter, EditorRequired] public string Schema { get; set; } = default!;
+    [Parameter, EditorRequired] public string Table { get; set; } = default!;
+    [Parameter] public Func<Task>? OnSuccess { get; set; }
+
+    private TableDefinition? table;
+    private string name = string.Empty;
+    private string type = "NONCLUSTERED";
+    private bool unique;
+    private readonly List<IndexColumn> keys = [];
+    private readonly HashSet<string> included = new(StringComparer.OrdinalIgnoreCase);
+    private string filter = string.Empty;
+    private int fillFactor;
+
+    private bool HasClustered => table?.Indexes.Any(i => i.Type is 1 or 5) == true;
+
+    private string DefaultName =>
+        $"{(type == "NCCI" ? "NCCI" : type == "CLUSTERED" ? "CIX" : unique ? "UX" : "IX")}_{Table}{(keys.Count > 0 ? "_" + string.Join("_", keys.Select(k => k.Name)) : "")}";
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            table = await Schemas.GetTableAsync(Server, Database, Schema, Table);
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+    }
+
+    private void AddKey(string? column)
+    {
+        if (!string.IsNullOrEmpty(column) && keys.All(k => k.Name != column))
+        {
+            keys.Add(new IndexColumn(column, false));
+            included.Remove(column);
+        }
+    }
+
+    private void Swap(int a, int b) => (keys[a], keys[b]) = (keys[b], keys[a]);
+
+    private void ToggleIncluded(string column, bool on)
+    {
+        if (on)
+            included.Add(column);
+        else
+            included.Remove(column);
+    }
+
+    private string BuildSql()
+    {
+        if (keys.Count == 0)
+            return string.Empty;
+
+        var index = Sql.Q(string.IsNullOrWhiteSpace(name) ? DefaultName : name.Trim());
+        var target = Sql.Q(Schema, Table);
+        if (type == "NCCI")
+            return $"CREATE NONCLUSTERED COLUMNSTORE INDEX {index} ON {target} ({string.Join(", ", keys.Select(k => Sql.Q(k.Name)))});";
+
+        var sb = new StringBuilder($"CREATE {(unique ? "UNIQUE " : "")}{type} INDEX {index}\n    ON {target} ({string.Join(", ", keys.Select(k => $"{Sql.Q(k.Name)} {(k.Descending ? "DESC" : "ASC")}"))})");
+        var include = included.Where(c => keys.All(k => k.Name != c)).ToList();
+        if (type == "NONCLUSTERED" && include.Count > 0)
+            sb.Append($"\n    INCLUDE ({string.Join(", ", include.Select(Sql.Q))})");
+        if (type == "NONCLUSTERED" && !string.IsNullOrWhiteSpace(filter))
+            sb.Append($"\n    WHERE {filter.Trim()}");
+        if (fillFactor is > 0 and < 100)
+            sb.Append($"\n    WITH (FILLFACTOR = {fillFactor})");
+        return sb.Append(';').ToString();
+    }
+
+    private async Task CreateAsync()
+    {
+        if (!await RunSqlAsync(Server, Database, BuildSql()))
+            return;
+
+        await Session.RefreshWhereAsync(n => n.Server == Server && n.Database == Database && n.Kind == NodeKind.IndexesFolder &&
+                                             n.ParentSchema == Schema && n.ParentName == Table);
+        if (OnSuccess is not null)
+            await OnSuccess();
+        Finish("IndexCreated");
+    }
+}

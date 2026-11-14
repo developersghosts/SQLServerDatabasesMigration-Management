@@ -1,0 +1,145 @@
+﻿@inherits LayoutComponentBase
+@implements IDisposable
+@inject MigrationSession Session
+@inject Localizer L
+@inject IJSRuntime JS
+@inject NavigationManager Navigation
+
+<div class="app-shell @(IsManager ? "mode-manager" : null)" dir="@L.Dir" lang="@L.Code">
+    <header class="app-header">
+        <div class="header-start">
+            <div class="brand">
+                <span class="brand-mark">⇄</span>
+                <span>@L["AppName"]</span>
+            </div>
+            <nav class="modes" aria-label="@L["Modes"]">
+                <a class="mode @(IsManager ? "active" : null)" href="manager">
+                    <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><ellipse cx="8" cy="3.75" rx="5.25" ry="2" /><path d="M2.75 3.75v8.5c0 1.1 2.35 2 5.25 2s5.25-.9 5.25-2v-8.5M2.75 8c0 1.1 2.35 2 5.25 2s5.25-.9 5.25-2" /></svg>
+                    @L["ModeManager"]
+                </a>
+                <a class="mode @(IsManager ? null : "active")" href="">
+                    <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5h10l-2.5-2.5M14 11H4l2.5 2.5" /></svg>
+                    @L["ModeMigration"]
+                </a>
+            </nav>
+        </div>
+        <div class="header-end">
+            @if (!IsManager)
+            {
+                <nav class="steps">
+                    <NavLink class="step" href="" Match="NavLinkMatch.All">
+                        <span class="step-num">1</span> @L["StepConnections"]
+                    </NavLink>
+                    @if (Session.IsReady)
+                    {
+                        <NavLink class="step" href="tables">
+                            <span class="step-num">2</span> @L["StepTables"]
+                        </NavLink>
+                    }
+                    else
+                    {
+                        <span class="step disabled" title="@L["ConnectFirst"]">
+                            <span class="step-num">2</span> @L["StepTables"]
+                        </span>
+                    }
+                </nav>
+            }
+            <button class="btn theme-toggle" @onclick="ToggleThemeAsync" title="@(dark ? L["LightMode"] : L["DarkMode"])" aria-label="@(dark ? L["LightMode"] : L["DarkMode"])">
+                @if (dark)
+                {
+                    <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3" /><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06" /></svg>
+                }
+                else
+                {
+                    <svg class="ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z" /></svg>
+                }
+            </button>
+            <button class="btn lang-toggle" @onclick="ToggleLanguageAsync">@L["OtherLanguage"]</button>
+        </div>
+    </header>
+
+    <main class="app-main @(IsManager ? "full" : null)">
+        @Body
+    </main>
+
+    <div id="blazor-error-ui" data-nosnippet>
+        @L["UnhandledError"]
+        <a href="." class="reload">@L["Reload"]</a>
+        <span class="dismiss">🗙</span>
+    </div>
+</div>
+
+@code {
+    private const string LanguageStorageKey = "app-lang";
+
+    private bool IsManager =>
+        Navigation.ToBaseRelativePath(Navigation.Uri).StartsWith("manager", StringComparison.OrdinalIgnoreCase);
+
+    protected override void OnInitialized()
+    {
+        Session.Changed += OnStateChanged;
+        L.Changed += OnStateChanged;
+        Navigation.LocationChanged += OnLocationChanged;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+
+        try
+        {
+            L.SetLanguage(await JS.InvokeAsync<string?>("localStorage.getItem", LanguageStorageKey));
+        }
+        catch (JSException)
+        {
+            // localStorage unavailable (private mode / blocked); keep the default language
+        }
+
+        try
+        {
+            dark = await JS.InvokeAsync<string>("appTheme.get") == "dark";
+            StateHasChanged();
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private bool dark;
+
+    private async Task ToggleThemeAsync()
+    {
+        try
+        {
+            dark = await JS.InvokeAsync<string>("appTheme.toggle") == "dark";
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private async Task ToggleLanguageAsync()
+    {
+        L.Toggle();
+
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.setItem", LanguageStorageKey, L.Code);
+        }
+        catch (JSException)
+        {
+        }
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e) => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Session.Changed -= OnStateChanged;
+        L.Changed -= OnStateChanged;
+        Navigation.LocationChanged -= OnLocationChanged;
+    }
+}

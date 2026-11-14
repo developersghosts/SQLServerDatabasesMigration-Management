@@ -1,0 +1,163 @@
+@inherits LocalizedComponentBase
+@inject ManagerSession Session
+@inject ManagerActions Actions
+@inject AdminService Admin
+
+<div class="view">
+    <div class="view-head">
+        <div class="view-title">
+            <Icon Name="server" />
+            <h2>@L["ServerProperties"]</h2>
+            <bdi class="mono muted">@Tab.Server.DisplayName</bdi>
+        </div>
+        <div class="view-actions">
+            <button class="btn sm" @onclick="LoadAsync" disabled="@loading"><Icon Name="refresh" /> @L["Refresh"]</button>
+        </div>
+    </div>
+
+    @if (error is not null)
+    {
+        <div class="status error"><bdi>@error</bdi></div>
+    }
+
+    <div class="props-layout">
+        <nav class="props-nav">
+            <button class="props-nav-item @(page == "general" ? "active" : null)" @onclick='() => page = "general"'>@L["General"]</button>
+            <button class="props-nav-item @(page == "config" ? "active" : null)" @onclick='() => page = "config"'>@L["Configuration"]</button>
+        </nav>
+        <div class="props-body">
+            @if (page == "general")
+            {
+                <div class="tiles">
+                    <div class="stat"><div class="stat-value small">@Tab.Server.Info.FriendlyVersion</div><div class="stat-label">@L["Version"]</div></div>
+                    <div class="stat"><div class="stat-value small"><bdi>@Tab.Server.Login</bdi></div><div class="stat-label">@L["LoginName"]</div></div>
+                    <div class="stat"><div class="stat-value small">@(Tab.Server.IsSysAdmin ? "sysadmin" : "—")</div><div class="stat-label">@L["ServerRole"]</div></div>
+                </div>
+                <dl class="facts-list">
+                    @foreach (var (key, value) in properties.Where(p => p.Key != "PropFullVersion"))
+                    {
+                        <dt>@L[key]</dt>
+                        <dd><bdi class="mono">@(value ?? "—")</bdi></dd>
+                    }
+                </dl>
+                @if (properties.FirstOrDefault(p => p.Key == "PropFullVersion").Value is { } version)
+                {
+                    <pre class="version-text" dir="ltr">@version</pre>
+                }
+            }
+            else
+            {
+                <div class="panel-tools">
+                    <input class="search sm" type="search" placeholder="@L["Filter"]" @bind="filter" @bind:event="oninput" />
+                    <label class="toggle"><input type="checkbox" @bind="onlyChanged" /> @L["OnlyNonDefault"]</label>
+                    <span class="spacer"></span>
+                    <button class="btn sm primary" @onclick="Apply" disabled="@(edits.Count == 0)"><Icon Name="save" /> @L["ApplyChanges"] @if (edits.Count > 0) { <span class="count">@edits.Count</span> }</button>
+                </div>
+                <div class="grid-scroll">
+                    <table class="grid" dir="ltr">
+                        <thead>
+                            <tr>
+                                <th>@L["Name"]</th>
+                                <th class="num">@L["ConfiguredValue"]</th>
+                                <th class="num">@L["RunningValue"]</th>
+                                <th class="num">@L["Minimum"]</th>
+                                <th class="num">@L["Maximum"]</th>
+                                <th>@L["Description"]</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var config in VisibleConfigurations)
+                            {
+                                <tr class="@(edits.ContainsKey(config.Id) ? "selected" : null)">
+                                    <td class="mono">
+                                        @config.Name
+                                        @if (config.IsAdvanced) { <span class="badge pending">advanced</span> }
+                                        @if (!config.IsDynamic) { <span class="badge missing" title="@L["RestartRequired"]">restart</span> }
+                                    </td>
+                                    <td class="num"><input class="cell mono narrow num" type="number" value="@(edits.TryGetValue(config.Id, out var v) ? v : config.Value)" min="@config.Minimum" max="@config.Maximum" @onchange="e => SetValue(config, e.Value as string)" /></td>
+                                    <td class="num @(config.Value != config.ValueInUse ? "warn-text" : null)">@config.ValueInUse.ToString("N0")</td>
+                                    <td class="num muted">@config.Minimum.ToString("N0")</td>
+                                    <td class="num muted">@config.Maximum.ToString("N0")</td>
+                                    <td class="muted small wrap">@config.Description</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ServerPropertiesTab Tab { get; set; } = default!;
+
+    private List<(string Key, string? Value)> properties = [];
+    private List<ServerConfiguration> configurations = [];
+    private readonly Dictionary<int, long> edits = [];
+    private string page = "general";
+    private string filter = string.Empty;
+    private bool onlyChanged;
+    private bool loading;
+    private string? error;
+
+    private IEnumerable<ServerConfiguration> VisibleConfigurations => configurations
+        .Where(c => string.IsNullOrWhiteSpace(filter) || c.Name.Contains(filter.Trim(), StringComparison.OrdinalIgnoreCase))
+        .Where(c => !onlyChanged || c.Value != c.ValueInUse || edits.ContainsKey(c.Id));
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        loading = true;
+        error = null;
+        try
+        {
+            properties = await Admin.GetServerPropertiesAsync(Tab.Server);
+            configurations = await Admin.GetConfigurationsAsync(Tab.Server);
+            edits.Clear();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void SetValue(ServerConfiguration config, string? text)
+    {
+        if (long.TryParse(text, out var value) && value != config.Value)
+            edits[config.Id] = Math.Clamp(value, config.Minimum, config.Maximum);
+        else
+            edits.Remove(config.Id);
+    }
+
+    private void Apply()
+    {
+        var changed = configurations.Where(c => edits.ContainsKey(c.Id)).ToList();
+        var statements = new List<string>();
+        var advancedOff = configurations.FirstOrDefault(c => c.Name == "show advanced options")?.ValueInUse == 0;
+        var needsAdvanced = advancedOff && changed.Any(c => c.IsAdvanced);
+        if (needsAdvanced)
+            statements.Add("EXEC sp_configure 'show advanced options', 1;\nRECONFIGURE;");
+        foreach (var config in changed)
+            statements.Add($"EXEC sp_configure {Sql.Lit(config.Name)}, {edits[config.Id]};");
+        statements.Add("RECONFIGURE;");
+
+        Actions.ShowAction(new ActionRequest
+        {
+            TitleKey = "ApplyConfiguration",
+            Subject = Tab.Server.DisplayName,
+            MessageKey = changed.Any(c => !c.IsDynamic) ? "RestartRequired" : null,
+            Server = Tab.Server,
+            Database = "master",
+            BuildSql = (_, _) => string.Join("\n", statements),
+            ShowSql = true,
+            ConfirmKey = "Apply",
+            OnSuccess = LoadAsync
+        });
+    }
+}

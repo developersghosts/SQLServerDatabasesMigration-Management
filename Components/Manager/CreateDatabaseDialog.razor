@@ -1,0 +1,234 @@
+@using System.Text
+@using System.Text.RegularExpressions
+@inherits SqlDialogBase
+@inject AdminService Admin
+
+<ModalFrame Title="@L["NewDatabase"]" Subject="@Server.DisplayName" IconName="database" Size="lg" Busy="@Run.IsRunning" OnClose="Close">
+    <ChildContent>
+        @if (browsing is not null)
+        {
+            <ServerFileBrowser Server="Server" Mode="FileBrowserMode.Folder" InitialPath="@(browsing == "data" ? dataPath : logPath)"
+                               OnPick="PickFolder" OnCancel="() => browsing = null" />
+        }
+        else
+        {
+            <div class="form-grid">
+                <label class="form-label" for="cd-name">@L["DatabaseName"] *</label>
+                <input id="cd-name" class="input mono" dir="ltr" @bind="name" @bind:event="oninput" disabled="@Run.IsRunning" />
+
+                <label class="form-label" for="cd-owner">@L["Owner"]</label>
+                <select id="cd-owner" class="input mono" dir="ltr" @bind="owner" disabled="@Run.IsRunning">
+                    <option value="">@L["DefaultOption"]</option>
+                    @foreach (var login in logins)
+                    {
+                        <option value="@login">@login</option>
+                    }
+                </select>
+
+                <label class="form-label" for="cd-coll">@L["Collation"]</label>
+                <div>
+                    <input id="cd-coll" class="input mono" dir="ltr" list="cd-colls" @bind="collation" @bind:event="oninput" @bind:after="SuggestAsync"
+                           placeholder="@(serverCollation ?? L["DefaultOption"])" disabled="@Run.IsRunning" />
+                    <datalist id="cd-colls">
+                        @foreach (var c in collations)
+                        {
+                            <option value="@c"></option>
+                        }
+                    </datalist>
+                    <div class="field-hint">@L["CollationHint"]</div>
+                </div>
+
+                <label class="form-label" for="cd-rec">@L["RecoveryModel"]</label>
+                <select id="cd-rec" class="input" @bind="recovery" disabled="@Run.IsRunning">
+                    <option value="">@L["DefaultOption"]</option>
+                    <option value="FULL">FULL</option>
+                    <option value="BULK_LOGGED">BULK_LOGGED</option>
+                    <option value="SIMPLE">SIMPLE</option>
+                </select>
+
+                <label class="form-label" for="cd-cmp">@L["CompatibilityLevel"]</label>
+                <select id="cd-cmp" class="input" @bind="compatibility" disabled="@Run.IsRunning">
+                    <option value="0">@L["DefaultOption"]</option>
+                    @foreach (var (level, label) in AdminService.CompatibilityLevels(Server))
+                    {
+                        <option value="@level">@label</option>
+                    }
+                </select>
+            </div>
+
+            <label class="check section-toggle"><input type="checkbox" @bind="customFiles" disabled="@Run.IsRunning" /> @L["CustomizeFiles"]</label>
+
+            @if (customFiles)
+            {
+                <div class="grid-scroll">
+                    <table class="grid files-grid">
+                        <thead>
+                            <tr>
+                                <th>@L["LogicalName"]</th>
+                                <th>@L["FileType"]</th>
+                                <th>@L["Folder"]</th>
+                                <th>@L["FileName"]</th>
+                                <th class="num">@L["SizeMb"]</th>
+                                <th class="num">@L["GrowthMb"]</th>
+                                <th class="num">@L["MaxSizeMb"]</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td class="mono"><bdi>@DataLogical</bdi></td>
+                                <td>ROWS</td>
+                                <td class="path-cell">
+                                    <input class="cell mono" dir="ltr" @bind="dataPath" />
+                                    <button class="btn xs" @onclick='() => browsing = "data"'>…</button>
+                                </td>
+                                <td class="mono"><bdi>@DataFile</bdi></td>
+                                <td><input class="cell mono narrow num" type="number" min="1" @bind="dataSize" /></td>
+                                <td><input class="cell mono narrow num" type="number" min="0" @bind="dataGrowth" /></td>
+                                <td><input class="cell mono narrow num" type="number" min="0" @bind="dataMax" placeholder="∞" /></td>
+                            </tr>
+                            <tr>
+                                <td class="mono"><bdi>@LogLogical</bdi></td>
+                                <td>LOG</td>
+                                <td class="path-cell">
+                                    <input class="cell mono" dir="ltr" @bind="logPath" />
+                                    <button class="btn xs" @onclick='() => browsing = "log"'>…</button>
+                                </td>
+                                <td class="mono"><bdi>@LogFile</bdi></td>
+                                <td><input class="cell mono narrow num" type="number" min="1" @bind="logSize" /></td>
+                                <td><input class="cell mono narrow num" type="number" min="0" @bind="logGrowth" /></td>
+                                <td><input class="cell mono narrow num" type="number" min="0" @bind="logMax" placeholder="∞" /></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p class="hint">@L["MaxSizeBlankHint"]</p>
+            }
+
+            @if (Error is not null)
+            {
+                <div class="status error">@Error</div>
+            }
+
+            <SqlPreview Sql="@BuildSql()" />
+            <RunLog Run="Run" />
+        }
+    </ChildContent>
+    <Footer>
+        <button class="btn" @onclick="() => ScriptToQuery(Server, null, BuildSql())" disabled="@(Run.IsRunning || !IsValid)"><Icon Name="query" /> @L["ScriptToNewQuery"]</button>
+        <span class="spacer"></span>
+        @if (Run.IsRunning)
+        {
+            <button class="btn" @onclick="Run.Cancel">@L["Stop"]</button>
+        }
+        else
+        {
+            <button class="btn" @onclick="Close">@L["Cancel"]</button>
+            <button class="btn primary" @onclick="CreateAsync" disabled="@(!IsValid)">@L["Create"]</button>
+        }
+    </Footer>
+</ModalFrame>
+
+@code {
+    [Parameter, EditorRequired] public ManagedServer Server { get; set; } = default!;
+
+    private string name = string.Empty;
+    private string owner = string.Empty;
+    private string collation = string.Empty;
+    private string? serverCollation;
+    private string recovery = string.Empty;
+    private int compatibility;
+    private bool customFiles;
+    private string dataPath = string.Empty;
+    private string logPath = string.Empty;
+    private int dataSize = 8, dataGrowth = 64, logSize = 8, logGrowth = 64;
+    private int? dataMax, logMax;
+    private string? browsing;
+    private List<string> logins = [];
+    private List<string> collations = [];
+
+    private string Name => name.Trim();
+    private string DataLogical => Name;
+    private string LogLogical => Name + "_log";
+    private string DataFile => Name + ".mdf";
+    private string LogFile => Name + "_log.ldf";
+
+    private bool IsValid => Name.Length > 0 && (collation.Trim().Length == 0 || Regex.IsMatch(collation.Trim(), "^[A-Za-z0-9_]+$"));
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var paths = await Admin.GetDefaultPathsAsync(Server);
+            dataPath = paths.Data;
+            logPath = paths.Log;
+            logins = await Admin.GetLoginNamesAsync(Server);
+            serverCollation = await Admin.GetServerCollationAsync(Server);
+            collations = await Admin.GetCollationsAsync(Server, "Arabic");
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+    }
+
+    private async Task SuggestAsync()
+    {
+        if (collation.Trim().Length >= 2)
+        {
+            try
+            {
+                collations = await Admin.GetCollationsAsync(Server, collation.Trim());
+            }
+            catch (Exception)
+            {
+            }
+        }
+    }
+
+    private void PickFolder(string folder)
+    {
+        if (browsing == "data")
+            dataPath = folder;
+        else
+            logPath = folder;
+        browsing = null;
+    }
+
+    private static string MaxSize(int? mb) => mb is > 0 ? $"{mb}MB" : "UNLIMITED";
+
+    private string BuildSql()
+    {
+        if (Name.Length == 0)
+            return string.Empty;
+
+        var db = Sql.Q(Name);
+        var sb = new StringBuilder($"CREATE DATABASE {db}");
+        if (customFiles)
+        {
+            sb.Append($"\n ON PRIMARY\n( NAME = {Sql.Lit(DataLogical)}, FILENAME = {Sql.Lit(AdminService.WithSeparator(dataPath.Trim()) + DataFile)}, SIZE = {Math.Max(dataSize, 1)}MB, MAXSIZE = {MaxSize(dataMax)}, FILEGROWTH = {Math.Max(dataGrowth, 0)}MB )");
+            sb.Append($"\n LOG ON\n( NAME = {Sql.Lit(LogLogical)}, FILENAME = {Sql.Lit(AdminService.WithSeparator(logPath.Trim()) + LogFile)}, SIZE = {Math.Max(logSize, 1)}MB, MAXSIZE = {MaxSize(logMax)}, FILEGROWTH = {Math.Max(logGrowth, 0)}MB )");
+        }
+
+        var c = collation.Trim();
+        if (c.Length > 0 && !string.Equals(c, serverCollation, StringComparison.OrdinalIgnoreCase))
+            sb.Append($"\n COLLATE {c}");
+        sb.Append(";\nGO\n");
+
+        if (recovery.Length > 0)
+            sb.Append($"ALTER DATABASE {db} SET RECOVERY {recovery};\nGO\n");
+        if (compatibility > 0)
+            sb.Append($"ALTER DATABASE {db} SET COMPATIBILITY_LEVEL = {compatibility};\nGO\n");
+        if (owner.Length > 0)
+            sb.Append($"ALTER AUTHORIZATION ON DATABASE::{db} TO {Sql.Q(owner)};\nGO\n");
+        return sb.ToString();
+    }
+
+    private async Task CreateAsync()
+    {
+        if (!await RunSqlAsync(Server, "master", BuildSql()))
+            return;
+
+        await Session.RefreshWhereAsync(n => n.Server == Server && n.Kind == NodeKind.DatabasesFolder);
+        Finish("DatabaseCreated");
+    }
+}

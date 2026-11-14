@@ -1,0 +1,50 @@
+@inherits LocalizedComponentBase
+
+<div class="modal-backdrop mgr-backdrop">
+    <div class="modal mgr-modal size-@Size" role="dialog" aria-modal="true" aria-labelledby="@titleId" @onkeydown="OnKeyDown">
+        <div class="mgr-modal-head">
+            @if (IconName is not null)
+            {
+                <Icon Name="@IconName" Class="head-icon" />
+            }
+            <div class="mgr-modal-titles">
+                <h2 id="@titleId">@Title</h2>
+                @if (!string.IsNullOrEmpty(Subject))
+                {
+                    <div class="modal-subject"><bdi>@Subject</bdi></div>
+                }
+            </div>
+            <button class="icon-btn" title="@L["Close"]" aria-label="@L["Close"]" @onclick="OnClose" disabled="@Busy"><Icon Name="close" /></button>
+        </div>
+        <div class="modal-body mgr-modal-body">
+            @ChildContent
+        </div>
+        @if (Footer is not null)
+        {
+            <div class="modal-actions mgr-modal-actions">
+                @Footer
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Title { get; set; } = string.Empty;
+    [Parameter] public string? Subject { get; set; }
+    [Parameter] public string? IconName { get; set; }
+
+    /// <summary>sm, md, lg or xl.</summary>
+    [Parameter] public string Size { get; set; } = "md";
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public RenderFragment? Footer { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly string titleId = "dlg-" + Guid.NewGuid().ToString("N")[..8];
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape" && !Busy)
+            await OnClose.InvokeAsync();
+    }
+}

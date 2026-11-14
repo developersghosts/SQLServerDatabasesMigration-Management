@@ -1,0 +1,278 @@
+@inherits LocalizedComponentBase
+@inject ManagerSession Session
+@inject ManagerActions Actions
+@inject AdminService Admin
+
+<div class="view">
+    <div class="view-head">
+        <div class="view-title">
+            <Icon Name="activity" />
+            <h2>@L["ActivityMonitor"]</h2>
+            <bdi class="mono muted">@Tab.Server.DisplayName</bdi>
+        </div>
+        <div class="view-actions">
+            <label class="toggle"><input type="checkbox" checked="@autoRefresh" @onchange="ToggleAutoRefresh" /> @L["AutoRefresh"]</label>
+            <select class="input sm" @bind="interval" disabled="@(!autoRefresh)">
+                <option value="5">5s</option>
+                <option value="10">10s</option>
+                <option value="30">30s</option>
+                <option value="60">60s</option>
+            </select>
+            <button class="btn sm" @onclick="LoadAsync" disabled="@loading"><Icon Name="refresh" /> @L["Refresh"]</button>
+        </div>
+    </div>
+
+    <div class="tiles">
+        <div class="stat"><div class="stat-value">@sessions.Count</div><div class="stat-label">@L["UserSessions"]</div></div>
+        <div class="stat"><div class="stat-value">@sessions.Count(s => s.Command is not null)</div><div class="stat-label">@L["ActiveRequests"]</div></div>
+        <div class="stat @(sessions.Any(s => s.BlockedBy > 0) ? "bad" : null)"><div class="stat-value">@sessions.Count(s => s.BlockedBy > 0)</div><div class="stat-label">@L["BlockedSessions"]</div></div>
+        <div class="stat"><div class="stat-value">@sessions.Sum(s => s.OpenTransactions)</div><div class="stat-label">@L["OpenTransactions"]</div></div>
+        <div class="stat"><div class="stat-value small"><bdi>@(updated?.ToString("HH:mm:ss") ?? "—")</bdi></div><div class="stat-label">@L["LastUpdated"]</div></div>
+    </div>
+
+    @if (error is not null)
+    {
+        <div class="status error"><bdi>@error</bdi></div>
+    }
+
+    <div class="subtabs" role="tablist">
+        <button class="subtab @(page == "processes" ? "active" : null)" @onclick='() => page = "processes"'>@L["Processes"]</button>
+        <button class="subtab @(page == "queries" ? "active" : null)" @onclick="OpenQueriesAsync">@L["ExpensiveQueries"]</button>
+        <span class="spacer"></span>
+        @if (page == "processes")
+        {
+            <input class="search sm" type="search" placeholder="@L["Filter"]" @bind="filter" @bind:event="oninput" />
+        }
+    </div>
+
+    @if (page == "processes")
+    {
+        <div class="grid-scroll grow">
+            <table class="grid activity" dir="ltr">
+                <thead>
+                    <tr>
+                        <th class="num">SPID</th>
+                        <th>@L["LoginName"]</th>
+                        <th>@L["Host"]</th>
+                        <th>@L["Program"]</th>
+                        <th>@L["Database"]</th>
+                        <th>@L["Status"]</th>
+                        <th>@L["Command"]</th>
+                        <th>@L["WaitType"]</th>
+                        <th class="num">@L["WaitMs"]</th>
+                        <th class="num">@L["BlockedBy"]</th>
+                        <th class="num">CPU (ms)</th>
+                        <th class="num">@L["LogicalReads"]</th>
+                        <th class="num">@L["Writes"]</th>
+                        <th class="num">@L["ElapsedMs"]</th>
+                        <th class="num">%</th>
+                        <th class="num">@L["OpenTransactions"]</th>
+                        <th>@L["LastRequest"]</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in VisibleSessions)
+                    {
+                        <tr class="@(s.BlockedBy > 0 ? "blocked" : s.Command is not null ? "active-row" : null)">
+                            <td class="num">@s.SessionId</td>
+                            <td>@s.Login</td>
+                            <td>@s.Host</td>
+                            <td class="ellipsis" title="@s.Program">@s.Program</td>
+                            <td>@s.Database</td>
+                            <td>@s.Status</td>
+                            <td>@s.Command</td>
+                            <td>@s.WaitType</td>
+                            <td class="num">@s.WaitMs.ToString("N0")</td>
+                            <td class="num">@(s.BlockedBy > 0 ? s.BlockedBy.ToString() : "")</td>
+                            <td class="num">@s.CpuMs.ToString("N0")</td>
+                            <td class="num">@s.LogicalReads.ToString("N0")</td>
+                            <td class="num">@s.Writes.ToString("N0")</td>
+                            <td class="num">@(s.Command is not null ? s.ElapsedMs.ToString("N0") : "")</td>
+                            <td class="num">@s.PercentComplete</td>
+                            <td class="num">@(s.OpenTransactions > 0 ? s.OpenTransactions.ToString() : "")</td>
+                            <td>@s.LastRequest?.ToString("HH:mm:ss")</td>
+                            <td class="row-actions">
+                                @if (!string.IsNullOrWhiteSpace(s.SqlText))
+                                {
+                                    <button class="btn xs" title="@L["ShowSqlText"]" @onclick="() => OpenText(s.SqlText!, s.Database)">SQL</button>
+                                }
+                                <button class="btn xs danger" @onclick="() => Kill(s)">@L["Kill"]</button>
+                            </td>
+                        </tr>
+                    }
+                    @if (!VisibleSessions.Any())
+                    {
+                        <tr><td colspan="18" class="empty">@(loading ? L["Loading"] : L["NoItems"])</td></tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        <div class="grid-scroll grow">
+            <table class="grid activity" dir="ltr">
+                <thead>
+                    <tr>
+                        <th class="num">@L["Executions"]</th>
+                        <th class="num">CPU (ms)</th>
+                        <th class="num">@L["AvgCpu"]</th>
+                        <th class="num">@L["LogicalReads"]</th>
+                        <th class="num">@L["ElapsedMs"]</th>
+                        <th>@L["LastRun"]</th>
+                        <th>@L["Database"]</th>
+                        <th>@L["Query"]</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var q in queries ?? [])
+                    {
+                        <tr>
+                            <td class="num">@q.Executions.ToString("N0")</td>
+                            <td class="num">@q.TotalCpuMs.ToString("N0")</td>
+                            <td class="num">@q.AvgCpuMs.ToString("N0")</td>
+                            <td class="num">@q.TotalReads.ToString("N0")</td>
+                            <td class="num">@q.TotalElapsedMs.ToString("N0")</td>
+                            <td>@q.LastRun?.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            <td>@q.Database</td>
+                            <td class="query-text"><button class="link-btn mono" @onclick="() => OpenText(q.Text ?? string.Empty, q.Database)">@Shorten(q.Text)</button></td>
+                        </tr>
+                    }
+                    @if (queries is { Count: 0 })
+                    {
+                        <tr><td colspan="8" class="empty">@L["NoItems"]</td></tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ActivityMonitorTab Tab { get; set; } = default!;
+
+    private List<SessionActivity> sessions = [];
+    private List<ExpensiveQuery>? queries;
+    private string page = "processes";
+    private string filter = string.Empty;
+    private bool loading;
+    private string? error;
+    private DateTime? updated;
+    private bool autoRefresh = true;
+    private int interval = 10;
+    private CancellationTokenSource? refresh;
+
+    private IEnumerable<SessionActivity> VisibleSessions => sessions.Where(s =>
+        string.IsNullOrWhiteSpace(filter) ||
+        $"{s.SessionId} {s.Login} {s.Host} {s.Program} {s.Database} {s.Command} {s.Status}".Contains(filter.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private static string Shorten(string? text)
+    {
+        var flat = string.Join(' ', (text ?? string.Empty).Split(new[] { '\r', '\n', '\t' }, StringSplitOptions.RemoveEmptyEntries)).Trim();
+        return flat.Length > 160 ? flat[..160] + "…" : flat;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        StartAutoRefresh();
+    }
+
+    private async Task LoadAsync()
+    {
+        loading = true;
+        error = null;
+        try
+        {
+            sessions = await Admin.GetActivityAsync(Tab.Server);
+            if (page == "queries")
+                queries = await Admin.GetExpensiveQueriesAsync(Tab.Server);
+            updated = DateTime.Now;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task OpenQueriesAsync()
+    {
+        page = "queries";
+        if (queries is null)
+        {
+            try
+            {
+                queries = await Admin.GetExpensiveQueriesAsync(Tab.Server);
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                queries = [];
+            }
+        }
+    }
+
+    private void ToggleAutoRefresh(ChangeEventArgs e)
+    {
+        autoRefresh = e.Value is true;
+        if (autoRefresh)
+            StartAutoRefresh();
+        else
+            refresh?.Cancel();
+    }
+
+    private void StartAutoRefresh()
+    {
+        refresh?.Cancel();
+        refresh = new CancellationTokenSource();
+        _ = RefreshLoopAsync(refresh.Token);
+    }
+
+    private async Task RefreshLoopAsync(CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(interval), token);
+                // Only while this tab is showing
+                if (Session.ActiveTab == Tab && !loading)
+                    await InvokeAsync(async () =>
+                    {
+                        await LoadAsync();
+                        StateHasChanged();
+                    });
+            }
+        }
+        catch (TaskCanceledException)
+        {
+        }
+    }
+
+    private void OpenText(string text, string? database) => Session.OpenQuery(Tab.Server, database, text);
+
+    private void Kill(SessionActivity s) => Actions.ShowAction(new ActionRequest
+    {
+        TitleKey = "KillProcess",
+        Subject = $"SPID {s.SessionId} · {s.Login} · {s.Program}",
+        MessageKey = "KillHint",
+        Server = Tab.Server,
+        Database = "master",
+        BuildSql = (_, _) => $"KILL {s.SessionId};",
+        Danger = true,
+        ConfirmKey = "Kill",
+        ShowSql = true,
+        OnSuccess = LoadAsync
+    });
+
+    public override void Dispose()
+    {
+        refresh?.Cancel();
+        base.Dispose();
+    }
+}

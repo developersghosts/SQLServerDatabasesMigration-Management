@@ -1,0 +1,323 @@
+@using System.Text.Json
+@using Microsoft.Data.SqlClient
+@inherits LocalizedComponentBase
+@inject ManagerSession Session
+@inject SqlServerService SqlServer
+@inject MigrationSession Migration
+@inject IJSRuntime JS
+
+<ModalFrame Title="@L["ConnectToServer"]" IconName="server" Busy="@connecting" OnClose="Close" Size="md">
+    <ChildContent>
+        <div class="seg" role="tablist">
+            <button class="seg-btn @(useString ? null : "active")" @onclick="() => useString = false" disabled="@connecting">@L["ConnectionProperties"]</button>
+            <button class="seg-btn @(useString ? "active" : null)" @onclick="() => useString = true" disabled="@connecting">@L["ConnectionString"]</button>
+        </div>
+
+        @if (!useString)
+        {
+            <div class="form-grid">
+                <label class="form-label" for="c-server">@L["ServerName"] *</label>
+                <div>
+                    <input id="c-server" class="input mono" dir="ltr" list="c-servers" autocomplete="off" @bind="server" @bind:event="oninput" @bind:after="ServerChanged" placeholder="localhost, .\SQLEXPRESS, 10.0.0.5,1433" disabled="@connecting" />
+                    <datalist id="c-servers">
+                        @foreach (var name in suggestions)
+                        {
+                            <option value="@name"></option>
+                        }
+                    </datalist>
+                </div>
+
+                <label class="form-label" for="c-auth">@L["Authentication"]</label>
+                <div class="seg" role="radiogroup" aria-labelledby="c-auth">
+                    <button type="button" id="c-auth" class="seg-btn @(sqlAuth ? null : "active")" role="radio" aria-checked="@(sqlAuth ? "false" : "true")"
+                            @onclick="() => SetAuth(false)" disabled="@connecting">@L["WindowsAuthentication"]</button>
+                    <button type="button" class="seg-btn @(sqlAuth ? "active" : null)" role="radio" aria-checked="@(sqlAuth ? "true" : "false")"
+                            @onclick="() => SetAuth(true)" disabled="@connecting">@L["SqlAuthentication"]</button>
+                </div>
+
+                @if (sqlAuth)
+                {
+                    <label class="form-label" for="c-login">@L["LoginName"] *</label>
+                    <input id="c-login" class="input mono" dir="ltr" autocomplete="username" @bind="login" @bind:event="oninput" disabled="@connecting" />
+
+                    <label class="form-label" for="c-password">@L["Password"]</label>
+                    <input id="c-password" class="input" dir="ltr" type="password" autocomplete="current-password" @bind="password" @bind:event="oninput" @onkeydown="OnKey" disabled="@connecting" />
+                }
+                else
+                {
+                    <div></div>
+                    <div class="field-hint">@L["WindowsAuthHint"]</div>
+                }
+
+                <label class="form-label" for="c-db">@L["Database"]</label>
+                <div>
+                    <input id="c-db" class="input mono" dir="ltr" @bind="database" @bind:event="oninput" placeholder="@L["DefaultDatabase"]" disabled="@connecting" />
+                </div>
+
+                <label class="form-label" for="c-encrypt">@L["Encryption"]</label>
+                <select id="c-encrypt" class="input" @bind="encrypt" disabled="@connecting">
+                    <option value="Optional">Optional</option>
+                    <option value="Mandatory">Mandatory</option>
+                    <option value="Strict">Strict</option>
+                </select>
+
+                <div></div>
+                <label class="check"><input type="checkbox" @bind="trustCertificate" disabled="@connecting" /> @L["TrustServerCertificate"]</label>
+
+                <label class="form-label" for="c-timeout">@L["ConnectTimeout"]</label>
+                <input id="c-timeout" class="input narrow" type="number" min="1" max="600" @bind="timeout" disabled="@connecting" />
+            </div>
+        }
+        else
+        {
+            <label class="field-label" for="c-cs">@L["ConnectionString"]</label>
+            <textarea id="c-cs" class="cs-input" dir="ltr" rows="4" spellcheck="false" @bind="connectionString" @bind:event="oninput"
+                      placeholder="Server=localhost;Integrated Security=True;" disabled="@connecting"></textarea>
+            <p class="hint">@L["ConnectionStringServerHint"]</p>
+        }
+
+        @if (HasMigrationConnections)
+        {
+            <div class="quick-fill">
+                <span class="muted">@L["UseMigrationConnection"]:</span>
+                @if (!string.IsNullOrWhiteSpace(Migration.Source.ConnectionString))
+                {
+                    <button class="chip" @onclick="() => Fill(Migration.Source.ConnectionString)">@L["Source"]</button>
+                }
+                @if (!string.IsNullOrWhiteSpace(Migration.Destination.ConnectionString))
+                {
+                    <button class="chip" @onclick="() => Fill(Migration.Destination.ConnectionString)">@L["Destination"]</button>
+                }
+            </div>
+        }
+
+        @if (error is not null)
+        {
+            <div class="status error">
+                <div class="status-title">@L["ConnectionFailed"]</div>
+                <div class="status-body"><bdi>@error</bdi></div>
+                @if (errorHint is not null)
+                {
+                    <div class="status-body hint-line">@errorHint</div>
+                }
+            </div>
+        }
+    </ChildContent>
+    <Footer>
+        <span class="spacer"></span>
+        <button class="btn" @onclick="Close" disabled="@connecting">@L["Cancel"]</button>
+        <button class="btn primary" @onclick="ConnectAsync" disabled="@(connecting || !CanConnect)">
+            @(connecting ? L["Connecting"] : L["Connect"])
+        </button>
+    </Footer>
+</ModalFrame>
+
+@code {
+    private const string RecentKey = "mgr-recent-servers";
+
+    private bool useString;
+    private string server = string.Empty;
+    private bool sqlAuth;
+    private string login = string.Empty;
+    private string password = string.Empty;
+    private string database = string.Empty;
+    private string encrypt = "Optional";
+    private bool trustCertificate = true;
+    private int timeout = 15;
+    private string connectionString = string.Empty;
+    private bool connecting;
+    private string? error;
+    private string? errorHint;
+    private List<string> suggestions = [];
+    private List<RecentServer> recent = [];
+
+    private sealed record RecentServer(string Server, bool SqlAuth, string? Login);
+
+    private bool HasMigrationConnections =>
+        !string.IsNullOrWhiteSpace(Migration.Source.ConnectionString) || !string.IsNullOrWhiteSpace(Migration.Destination.ConnectionString);
+
+    private bool CanConnect => useString
+        ? !string.IsNullOrWhiteSpace(connectionString)
+        : !string.IsNullOrWhiteSpace(server) && (!sqlAuth || !string.IsNullOrWhiteSpace(login));
+
+    protected override void OnInitialized() => suggestions = LocalServers.Find();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+
+        try
+        {
+            var json = await JS.InvokeAsync<string?>("localStorage.getItem", RecentKey);
+            recent = string.IsNullOrEmpty(json) ? [] : JsonSerializer.Deserialize<List<RecentServer>>(json) ?? [];
+        }
+        catch (Exception)
+        {
+            recent = [];
+        }
+
+        suggestions = recent.Select(r => r.Server).Concat(suggestions).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (recent.FirstOrDefault() is { } last && string.IsNullOrEmpty(server))
+        {
+            server = last.Server;
+            sqlAuth = last.SqlAuth;
+            login = last.Login ?? string.Empty;
+        }
+        else if (string.IsNullOrEmpty(server) && suggestions.Count > 0)
+        {
+            server = suggestions[0];
+        }
+
+        StateHasChanged();
+        await JS.InvokeVoidAsync("sqlManager.focus", "#c-server");
+    }
+
+    private async Task SetAuth(bool sql)
+    {
+        sqlAuth = sql;
+        error = null;
+        if (sql)
+        {
+            StateHasChanged();
+            await Task.Yield();
+            await JS.InvokeVoidAsync("sqlManager.focus", string.IsNullOrWhiteSpace(login) ? "#c-login" : "#c-password");
+        }
+    }
+
+    /// <summary>A server picked from the saved list brings back the way it was signed in to.</summary>
+    private void ServerChanged()
+    {
+        error = null;
+        if (recent.FirstOrDefault(r => string.Equals(r.Server, server.Trim(), StringComparison.OrdinalIgnoreCase)) is { } saved)
+        {
+            sqlAuth = saved.SqlAuth;
+            login = saved.Login ?? string.Empty;
+        }
+    }
+
+    /// <summary>4060, or 18456 state 38/40: the login is valid but the requested database can't be opened.</summary>
+    private static bool IsMissingDatabase(SqlException ex) =>
+        ex.Number == 4060 || ex.Errors.Cast<SqlError>().Any(e => e.Number == 4060) ||
+        ex.Message.Contains("Cannot open database", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Plain explanation for the usual sign-in errors.</summary>
+    private string? ErrorHint(Exception ex) => ex is SqlException sql ? sql.Number switch
+    {
+        // Windows sign-in that arrives as "<machine>\Guest": SQL Server on Linux / Docker, which has no Windows Authentication
+        18456 when !sqlAuth && sql.Message.Contains("\\Guest'", StringComparison.OrdinalIgnoreCase) => L["WindowsAuthGuestHint"],
+        18456 => L[sqlAuth ? "LoginFailedSqlHint" : "LoginFailedWindowsHint"],
+        18452 => L["UntrustedDomainHint"],
+        18470 => L["LoginDisabledHint"],
+        4060 => L["DatabaseNotAccessibleHint"],
+        -1 or 2 or 53 or 26 or 258 or 10060 or 10061 or 11001 => L["ServerNotFoundHint"],
+        _ => null
+    } : null;
+
+    private void Fill(string value)
+    {
+        useString = true;
+        connectionString = value;
+        error = null;
+    }
+
+    private async Task OnKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && CanConnect && !connecting)
+            await ConnectAsync();
+    }
+
+    private string Build()
+    {
+        if (useString)
+            return SqlServerService.Normalize(connectionString, requireDatabase: false);
+
+        var builder = new SqlConnectionStringBuilder
+        {
+            DataSource = server.Trim(),
+            IntegratedSecurity = !sqlAuth,
+            Encrypt = encrypt switch
+            {
+                "Mandatory" => SqlConnectionEncryptOption.Mandatory,
+                "Strict" => SqlConnectionEncryptOption.Strict,
+                _ => SqlConnectionEncryptOption.Optional
+            },
+            TrustServerCertificate = trustCertificate,
+            ConnectTimeout = Math.Clamp(timeout, 1, 600),
+            ApplicationName = "SQL Server Manager"
+        };
+        if (sqlAuth)
+        {
+            builder.UserID = login.Trim();
+            builder.Password = password;
+        }
+
+        if (!string.IsNullOrWhiteSpace(database))
+            builder.InitialCatalog = database.Trim();
+        return builder.ConnectionString;
+    }
+
+    private async Task ConnectAsync()
+    {
+        connecting = true;
+        error = null;
+        errorHint = null;
+        StateHasChanged();
+
+        try
+        {
+            var cs = Build();
+            ServerInfo info;
+            try
+            {
+                info = await SqlServer.GetServerInfoAsync(cs, requireDatabase: false);
+            }
+            catch (SqlException ex) when (IsMissingDatabase(ex) && new SqlConnectionStringBuilder(cs).InitialCatalog is { Length: > 0 } missing)
+            {
+                // The sign-in is fine but that database doesn't exist (or can't be opened): connect to the server itself
+                var builder = new SqlConnectionStringBuilder(cs) { InitialCatalog = string.Empty };
+                cs = builder.ConnectionString;
+                info = await SqlServer.GetServerInfoAsync(cs, requireDatabase: false);
+                Session.Toast(string.Format(L["DatabaseSkipped"], missing), ToastKind.Info);
+            }
+
+            var identity = await Db.QueryAsync(cs, "SELECT SYSTEM_USER, CAST(ISNULL(IS_SRVROLEMEMBER('sysadmin'), 0) AS int)",
+                r => (Login: r.GetString(0), SysAdmin: r.Int(1) == 1));
+            var displayName = new SqlConnectionStringBuilder(cs).DataSource;
+
+            await Session.AddServerAsync(new ManagedServer(displayName, cs, info, identity[0].Login, identity[0].SysAdmin));
+            await SaveRecentAsync(displayName);
+            Session.CloseDialog();
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            errorHint = ErrorHint(ex);
+        }
+        finally
+        {
+            connecting = false;
+        }
+    }
+
+    private async Task SaveRecentAsync(string displayName)
+    {
+        // Never stores passwords
+        var entry = useString ? new RecentServer(displayName, false, null) : new RecentServer(displayName, sqlAuth, sqlAuth ? login.Trim() : null);
+        recent.RemoveAll(r => string.Equals(r.Server, entry.Server, StringComparison.OrdinalIgnoreCase));
+        recent.Insert(0, entry);
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.setItem", RecentKey, JsonSerializer.Serialize(recent.Take(10)));
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private void Close()
+    {
+        if (!connecting)
+            Session.CloseDialog();
+    }
+}

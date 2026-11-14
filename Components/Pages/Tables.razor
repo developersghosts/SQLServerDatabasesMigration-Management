@@ -1,0 +1,124 @@
+﻿@page "/tables"
+@inherits LocalizedComponentBase
+@inject MigrationSession Session
+@inject SqlServerService SqlServer
+@inject TableCopyJob CopyJob
+@inject NavigationManager Navigation
+
+<PageTitle>@L["StepTables"] · @L["AppName"]</PageTitle>
+
+<div class="page-head row">
+    <div>
+        <h1>@L["TablesTitle"]</h1>
+        <p class="lead">@L["TablesLead"]</p>
+    </div>
+    <div class="head-actions">
+        <a class="btn" href="">@L["BackToConnections"]</a>
+        <button class="btn" @onclick="LoadAsync" disabled="@(source.IsLoading || destination.IsLoading || CopyJob.IsLocked)">@L["Refresh"]</button>
+    </div>
+</div>
+
+@if (Session.IsSameDatabase)
+{
+    <div class="banner warn">@L["SameDatabaseCopyBlocked"]</div>
+}
+
+<CopyControls CanCopy="@(!Session.IsSameDatabase && !source.IsLoading && !destination.IsLoading)" OnFinished="LoadAsync" />
+
+<div class="two-col">
+    <SourceTablesPanel Server="Session.Source.Server"
+                       Tables="source.Tables"
+                       Matches="matches"
+                       IsLoading="source.IsLoading"
+                       Error="@source.Error" />
+
+    <SelectedTablesPanel Server="Session.Destination.Server"
+                         IsLoading="destination.IsLoading"
+                         Error="@destination.Error" />
+</div>
+
+@code {
+    private readonly TableListState source = new();
+    private readonly TableListState destination = new();
+
+    // Destination table for each source table, including near names (Customers → Customer)
+    private Dictionary<string, TableInfo> matches = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!Session.IsReady)
+        {
+            Navigation.NavigateTo("");
+            return;
+        }
+
+        CopyJob.Changed += OnJobChanged;
+
+        // An open copy transaction can hold schema locks in the destination, so reuse the last lists
+        if (CopyJob.IsLocked && Session.SourceTables is not null && Session.DestinationTables is not null)
+        {
+            source.Set(Session.SourceTables);
+            destination.Set(Session.DestinationTables);
+            matches = TableMatcher.Match(source.Tables, destination.Tables);
+            return;
+        }
+
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        await Task.WhenAll(
+            LoadAsync(source, Session.Source.ConnectionString),
+            LoadAsync(destination, Session.Destination.ConnectionString));
+
+        matches = TableMatcher.Match(source.Tables, destination.Tables);
+
+        if (source.Error is null && destination.Error is null)
+        {
+            Session.SourceTables = source.Tables;
+            Session.DestinationTables = destination.Tables;
+            CopyJob.SyncCounts(source.Tables, matches);
+        }
+    }
+
+    private async Task LoadAsync(TableListState state, string connectionString)
+    {
+        state.IsLoading = true;
+        state.Error = null;
+        StateHasChanged();
+
+        try
+        {
+            state.Set(await SqlServer.GetTablesAsync(connectionString));
+        }
+        catch (Exception ex)
+        {
+            state.Set([]);
+            state.Error = ex.Message;
+        }
+        finally
+        {
+            state.IsLoading = false;
+        }
+
+        StateHasChanged();
+    }
+
+    private void OnJobChanged() => InvokeAsync(StateHasChanged);
+
+    public override void Dispose()
+    {
+        CopyJob.Changed -= OnJobChanged;
+        base.Dispose();
+    }
+
+    private sealed class TableListState
+    {
+        public List<TableInfo> Tables { get; private set; } = [];
+        public bool IsLoading { get; set; }
+        public string? Error { get; set; }
+
+        public void Set(List<TableInfo> tables) => Tables = tables;
+    }
+}
