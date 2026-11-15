@@ -34,18 +34,30 @@ public sealed class ResultSet(List<ResultColumn> columns)
     public long TotalRows { get; set; }
     public bool Truncated { get; set; }
 
+    /// <summary>MySQL / PostgreSQL / Oracle: the base table and column of each result column (null when computed).</summary>
+    public List<ColumnOrigin?>? Origins { get; set; }
+
     /// <summary>The batch that returned this grid, its database and the grid's position in it; used to edit cells.</summary>
     public string? BatchSql { get; init; }
     public string? Database { get; init; }
     public int IndexInBatch { get; init; }
 
-    /// <summary>Which cells can be edited, worked out the first time a cell is opened.</summary>
+    /// <summary>Which cells can be edited and each column's keys, worked out when the grid first shows.</summary>
     public Task<ResultEditInfo>? EditInfo { get; set; }
+
+    /// <summary>Vertical view: one record at a time, its fields listed down the page.</summary>
+    public bool Vertical { get; set; }
+
+    /// <summary>Record shown in the vertical view.</summary>
+    public int Record { get; set; }
 
     /// <summary>Row indexes for Virtualize, which needs an ICollection.</summary>
     public RowIndexList Indexes => indexes ??= new RowIndexList(Rows);
     private RowIndexList? indexes;
 }
+
+/// <summary>Base table and column a result column was read from, as reported by the provider.</summary>
+public sealed record ColumnOrigin(string? Schema, string Table, string Column);
 
 /// <summary>Where an edited cell is saved: its base table and column, and the result columns holding the row's key.</summary>
 /// <param name="Table">[schema].[table] in <paramref name="Database"/>.</param>
@@ -58,9 +70,30 @@ public sealed record CellEditTarget(
     bool IsNullable,
     IReadOnlyList<(int Index, string Column, string Type)> Keys);
 
+/// <summary>Where a result column comes from and its keys, shown on the column header.</summary>
+/// <param name="ForeignKey">Referenced table and column, when the column is a foreign key.</param>
+public sealed record ResultColumnInfo(
+    string Database,
+    string Schema,
+    string Table,
+    string Column,
+    bool IsPrimaryKey,
+    bool IsUnique,
+    (string Schema, string Table, string Column)? ForeignKey,
+    bool IsIdentity,
+    bool IsComputed,
+    bool IsNullable,
+    string Type)
+{
+    public string ForeignKeyDisplay => ForeignKey is { } fk ? $"{fk.Schema}.{fk.Table}.{fk.Column}" : string.Empty;
+}
+
 /// <param name="Reason">Translation key explaining why nothing can be edited, when <see cref="Columns"/> is empty.</param>
 public sealed record ResultEditInfo(IReadOnlyDictionary<int, CellEditTarget> Columns, string? Reason, string? Detail = null)
 {
+    /// <summary>Source and keys per result column (known even when nothing can be edited).</summary>
+    public IReadOnlyDictionary<int, ResultColumnInfo> Info { get; init; } = new Dictionary<int, ResultColumnInfo>();
+
     public static ResultEditInfo No(string reason, string? detail = null) => new(new Dictionary<int, CellEditTarget>(), reason, detail);
 }
 

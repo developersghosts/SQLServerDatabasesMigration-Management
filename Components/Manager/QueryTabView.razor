@@ -15,11 +15,15 @@
         <button class="btn sm" @onclick="Cancel" disabled="@(!Tab.IsRunning)" title="Alt+Break">
             <Icon Name="stop" /> @L["Cancel"]
         </button>
-        <button class="btn sm" @onclick="() => ExecuteAsync(true)" disabled="@Tab.IsRunning" title="Ctrl+F5">
-            <Icon Name="check" /> @L["Parse"]
-        </button>
+        @if (Tab.Server.IsSqlServer)
+        {
+            <button class="btn sm" @onclick="() => ExecuteAsync(true)" disabled="@Tab.IsRunning" title="Ctrl+F5">
+                <Icon Name="check" /> @L["Parse"]
+            </button>
+        }
         <span class="tb-sep"></span>
-        <label class="tb-label" for="db-@Tab.Id">@L["Database"]</label>
+        <span class="engine-pill">@EngineLabel(Tab.Server.Engine)</span>
+        <label class="tb-label" for="db-@Tab.Id">@L[Tab.Server.Engine == DatabaseEngine.Oracle ? "Schema" : "Database"]</label>
         <select id="db-@Tab.Id" class="input sm db-select" dir="ltr" value="@Tab.Database" @onchange="ChangeDatabaseAsync" disabled="@Tab.IsRunning">
             @if (Tab.Database is null)
             {
@@ -53,7 +57,7 @@
     <div class="editor" @ref="editorBox">
         <pre class="gutter" @ref="gutter" aria-hidden="true"></pre>
         <textarea @ref="textarea" class="code" dir="ltr" wrap="off" spellcheck="false" autocomplete="off"
-                  aria-label="@L["QueryEditor"]" placeholder="@L["QueryPlaceholder"]"
+                  aria-label="@L["QueryEditor"]" placeholder="@L[Tab.Server.IsSqlServer ? "QueryPlaceholder" : "QueryPlaceholderOther"]"
                   value="@Tab.Sql" @onchange="OnSqlChanged"></textarea>
     </div>
 
@@ -224,7 +228,15 @@
 
     private void OnSqlChanged(ChangeEventArgs e) => Tab.Sql = e.Value as string ?? string.Empty;
 
-    private async Task<SqlConnection?> EnsureConnectionAsync(CancellationToken cancellationToken)
+    private static string EngineLabel(DatabaseEngine engine) => engine switch
+    {
+        DatabaseEngine.MySql => "MySQL",
+        DatabaseEngine.PostgreSql => "PostgreSQL",
+        DatabaseEngine.Oracle => "Oracle",
+        _ => "SQL Server"
+    };
+
+    private async Task<System.Data.Common.DbConnection?> EnsureConnectionAsync(CancellationToken cancellationToken)
     {
         if (Tab.Connection is { State: ConnectionState.Open } open)
             return open;
@@ -237,15 +249,29 @@
 
         try
         {
-            // Not pooled: closing the tab really ends the session and rolls back what it left open
-            var builder = new SqlConnectionStringBuilder(Tab.Server.ConnectionStringFor(Tab.Database)) { Pooling = false };
-            var connection = new SqlConnection(builder.ConnectionString);
-            await connection.OpenAsync(cancellationToken);
-            Tab.Connection = connection;
-            Tab.SessionId = connection.ServerProcessId;
-            Tab.Database = connection.Database;
+            if (Tab.Server.IsSqlServer)
+            {
+                // Not pooled: closing the tab really ends the session and rolls back what it left open
+                var builder = new SqlConnectionStringBuilder(Tab.Server.ConnectionStringFor(Tab.Database)) { Pooling = false };
+                var connection = new SqlConnection(builder.ConnectionString);
+                await connection.OpenAsync(cancellationToken);
+                Tab.Connection = connection;
+                Tab.SessionId = connection.ServerProcessId;
+                Tab.Database = connection.Database;
+            }
+            else
+            {
+                var dialect = Dialects.For(Tab.Server);
+                var builder = new System.Data.Common.DbConnectionStringBuilder { ConnectionString = Tab.Server.ConnectionStringFor(Tab.Database) };
+                builder["Pooling"] = false;
+                var connection = await dialect.OpenAsync(builder.ConnectionString, Tab.Database, cancellationToken);
+                Tab.Connection = connection;
+                Tab.SessionId = null;
+                Tab.Database = await dialect.CurrentDatabaseAsync(connection) ?? Tab.Database;
+            }
+
             Tab.ConnectionError = null;
-            return connection;
+            return Tab.Connection;
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
@@ -289,11 +315,11 @@
             }
             else
             {
-                await QueryRunner.RunAsync(connection, script, execution, new RunOptions
+                var options = new RunOptions
                 {
                     LineOffset = lineOffset,
                     MaxRowsPerResult = maxRows,
-                    ParseOnly = parseOnly,
+                    ParseOnly = parseOnly && Tab.Server.IsSqlServer,
                     OnProgress = async () =>
                     {
                         StateHasChanged();
@@ -304,11 +330,18 @@
                         execution.DrainPending();
                         StateHasChanged();
                     })
-                }, cancellation.Token);
+                };
+
+                if (connection is SqlConnection sql)
+                    await QueryRunner.RunAsync(sql, script, execution, options, cancellation.Token);
+                else
+                    await GenericQueryRunner.RunAsync(Dialects.For(Tab.Server), connection, script, execution, options, cancellation.Token);
 
                 if (connection.State == ConnectionState.Open)
                 {
-                    Tab.Database = connection.Database;
+                    // USE (MySQL) and ALTER SESSION SET CURRENT_SCHEMA (Oracle) change it
+                    Tab.Database = connection is SqlConnection ? connection.Database
+                        : await Dialects.For(Tab.Server).CurrentDatabaseAsync(connection) ?? Tab.Database;
                 }
                 else
                 {
@@ -365,8 +398,25 @@
         {
             try
             {
-                await connection.ChangeDatabaseAsync(database);
-                Tab.Database = connection.Database;
+                if (Tab.Server.IsSqlServer)
+                {
+                    await connection.ChangeDatabaseAsync(database);
+                    Tab.Database = connection.Database;
+                }
+                else if (await Dialects.For(Tab.Server).ChangeDatabaseAsync(connection, database))
+                {
+                    Tab.Database = database;
+                }
+                else
+                {
+                    // PostgreSQL: a new session on the other database
+                    await connection.DisposeAsync();
+                    Tab.Connection = null;
+                    Tab.Database = database;
+                    await EnsureConnectionAsync(CancellationToken.None);
+                    if (Tab.ConnectionError is { } error)
+                        Session.Toast(error, ToastKind.Error);
+                }
             }
             catch (Exception ex)
             {

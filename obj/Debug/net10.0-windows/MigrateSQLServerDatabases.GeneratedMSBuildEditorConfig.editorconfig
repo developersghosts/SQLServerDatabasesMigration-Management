@@ -50,6 +50,10 @@ build_metadata.AdditionalFiles.CssScope =
 build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50c1xNYW5hZ2VyXEJhY2t1cERpYWxvZy5yYXpvcg==
 build_metadata.AdditionalFiles.CssScope = 
 
+[F:/Copy Database/MigrateSQLServerDatabases/Components/Manager/ColumnKeys.razor]
+build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50c1xNYW5hZ2VyXENvbHVtbktleXMucmF6b3I=
+build_metadata.AdditionalFiles.CssScope = 
+
 [F:/Copy Database/MigrateSQLServerDatabases/Components/Manager/ConnectDialog.razor]
 build_metadata.AdditionalFiles.TargetPath = Q29tcG9uZW50c1xNYW5hZ2VyXENvbm5lY3REaWFsb2cucmF6b3I=
 build_metadata.AdditionalFiles.CssScope = 

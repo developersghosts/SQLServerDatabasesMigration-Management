@@ -2,11 +2,11 @@
 
 <div dir="rtl">
 
-برنامج لإدارة قواعد بيانات **SQL Server** وترحيل البيانات بينها، بواجهة **عربي / إنجليزي** ووضع **نهاري / ليلي**. يعمل في المتصفح أو كبرنامج سطح مكتب على ويندوز.
+برنامج لإدارة قواعد بيانات **SQL Server** و**MySQL** و**PostgreSQL** و**Oracle**، وترحيل البيانات بين قواعد SQL Server، بواجهة **عربي / إنجليزي** ووضع **نهاري / ليلي**. يعمل في المتصفح أو كبرنامج سطح مكتب على ويندوز.
 
 </div>
 
-A tool to **manage SQL Server databases** and **migrate data** between them, with an **Arabic / English** interface and **light / dark** themes. It runs in the browser or as a Windows desktop app.
+A tool to **manage SQL Server, MySQL, PostgreSQL and Oracle databases** and **migrate data** between SQL Server databases, with an **Arabic / English** interface and **light / dark** themes. It runs in the browser or as a Windows desktop app.
 
 ---
 
@@ -46,7 +46,8 @@ A tool to **manage SQL Server databases** and **migrate data** between them, wit
 [24. مراقب النشاط · Activity Monitor](#f24) ·
 [25. خصائص السيرفر · Server properties](#f25) ·
 [26. مستعرض ملفات السيرفر · Server file browser](#f26) ·
-[27. نوافذ التأكيد · Confirmation dialogs](#f27)
+[27. نوافذ التأكيد · Confirmation dialogs](#f27) ·
+[MySQL وPostgreSQL وOracle · Other engines](#engines)
 
 **ترحيل البيانات · Data Migration**
 [28. الاتصال بالمصدر والوجهة · Connections](#f28) ·
@@ -70,12 +71,14 @@ A tool to **manage SQL Server databases** and **migrate data** between them, wit
 - ويندوز 10 أو 11.
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) للتشغيل من الكود. النسخة المنشورة لا تحتاجه.
 - SQL Server 2005 أو أحدث. تعديل خلايا نتائج الاستعلام يحتاج SQL Server 2012 أو أحدث.
+- أو MySQL 5.7 / 8 أو أحدث، أو PostgreSQL 12 أو أحدث، أو Oracle 12c أو أحدث (مثل Oracle 19c و23ai).
 
 </div>
 
 - Windows 10 or 11.
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) to run from source. The published app doesn't need it.
 - SQL Server 2005 or later. Editing query result cells needs SQL Server 2012 or later.
+- Or MySQL 5.7 / 8 or later, PostgreSQL 12 or later, or Oracle 12c or later (e.g. Oracle 19c, 23ai).
 
 <a id="run"></a>
 ## التشغيل من الكود · Run from source
@@ -323,6 +326,8 @@ Open it with **New query** (right-click a server or database, or the toolbar but
 **تبويب النتائج:**
 - جدول لكل نتيجة يُرجعها الاستعلام، مع عدد الصفوف والأعمدة.
 - الجداول الكبيرة (مئات الآلاف من الصفوف) تُعرض بسرعة لأن الصفحة ترسم الصفوف الظاهرة فقط، والصفوف تظهر أثناء التنفيذ.
+- **طريقتا عرض:** **أفقي** (جدول عادي مثل Excel) و**رأسي** (سجل واحد في كل مرة وحقوله تحت بعضها، مع أزرار التنقل بين السجلات وخانة للانتقال لرقم سجل). النقر المزدوج على رقم الصف يعرضه رأسياً.
+- **المفاتيح على الحقول:** كل عمود يظهر عليه مفتاحه: 🔑 مفتاح أساسي (PK)، ومفتاح خارجي (FK) مع الجدول والعمود الذي يشير إليه، وUQ للقيمة الفريدة، وID لـ Identity، وƒx للعمود المحسوب. مرّر الماوس على عنوان العمود لعرض النوع وNULL ومصدره.
 - قيم NULL مميزة بلون مختلف، والأرقام محاذاة لليمين.
 - النقر على خلية يحددها، و`Ctrl+C` ينسخها.
 - **نسخ مع العناوين:** ينسخ النتيجة كاملة بصيغة تُلصق مباشرة في Excel.
@@ -340,6 +345,8 @@ Open it with **New query** (right-click a server or database, or the toolbar but
 **Results tab:**
 - One grid per result set, with row and column counts.
 - Large results (hundreds of thousands of rows) stay fast because only visible rows are drawn, and rows appear while the query runs.
+- **Two layouts:** **Horizontal** (a normal grid, like Excel) and **Vertical** (one record at a time with its fields listed down the page, with record navigation and a box to jump to a record number). Double-click a row number to show that row vertically.
+- **Keys on the columns:** each column shows its keys: 🔑 primary key (PK), foreign key (FK) with the table and column it points to, UQ for unique, ID for identity, ƒx for computed. Hover a column header to see its type, nullability and source.
 - NULL values are highlighted and numbers are right-aligned.
 - Click a cell to select it; `Ctrl+C` copies it.
 - **Copy with headers** copies the whole grid in a format that pastes straight into Excel.
@@ -357,7 +364,11 @@ The **status bar** shows the result with a color (green success, red errors, blu
 
 <div dir="rtl">
 
-**انقر مرتين** على أي خلية في النتائج (أو `Enter` / `F2`) لعرض قيمتها كاملة في نافذة، ويمكنك تعديلها وحفظها مباشرة في الجدول:
+**في العرض الأفقي:** انقر مرتين على أي خلية (أو `Enter` / `F2`) فتتحول لخانة كتابة داخل الجدول نفسه. `Enter` يحفظ، و`Esc` يلغي، والخروج من الخانة يحفظ. القيم الطويلة أو متعددة الأسطر، والخلايا التي لا تقبل التعديل، تفتح في نافذة تعرض القيمة كاملة (أو سبب عدم إمكانية التعديل). زر **عرض / تعديل** يفتح نفس النافذة لأي خلية.
+
+**في العرض الرأسي:** كل حقل قابل للتعديل يظهر كخانة كتابة. `Enter` يحفظ الحقل (`Ctrl+Enter` للنص الطويل)، و`Esc` يتراجع. يمكن تعديل عدة حقول ثم **حفظ الكل**. الحقول التي للقراءة فقط تظهر بإطار منقط. وبجانب المفتاح الخارجي زر **فتح السجل المرتبط** يعرض السجل الذي يشير إليه.
+
+في الحالتين يتم الحفظ مباشرة في الجدول:
 
 - البرنامج يسأل SQL Server عن الجدول والعمود اللذين جاءت منهما القيمة، بدون إعادة تنفيذ الاستعلام، ثم يحفظ بأمر `UPDATE` على الصف المحدد بمفتاحه الأساسي. النافذة تعرض بالضبط أين سيتم الحفظ وبأي عمود يُحدَّد الصف.
 - **اتجاه الكتابة تلقائي:** النص العربي يُكتب من اليمين والإنجليزي من اليسار، ويتغير الاتجاه أثناء الكتابة.
@@ -369,7 +380,11 @@ The **status bar** shows the result with a color (green success, red errors, blu
 
 </div>
 
-**Double-click** any result cell (or press `Enter` / `F2`) to see its full value in a window, where you can also edit it and save it straight to the table:
+**Horizontal layout:** double-click a cell (or press `Enter` / `F2`) and it becomes an input right in the grid. `Enter` saves, `Esc` cancels, and leaving the cell saves. Long or multi-line values, and cells that can't be edited, open in a window showing the full value (or why it can't be edited). The **View / edit** button opens that window for any cell.
+
+**Vertical layout:** every editable field is an input. `Enter` saves the field (`Ctrl+Enter` for long text) and `Esc` undoes it. Change several fields, then **Save all**. Read-only fields have a dashed border. Foreign keys have an **Open the related record** button that shows the record they point to.
+
+Either way, values are saved straight to the table:
 
 - The app asks SQL Server which table and column the value comes from, without running the query again, then saves with an `UPDATE` on that row, found by its primary key. The window shows exactly where it saves and which columns identify the row.
 - **Typing direction is automatic:** Arabic is written right-to-left and English left-to-right, and it changes as you type.
@@ -832,6 +847,67 @@ Every command that changes the server opens a confirmation window with:
 - **Script to new query** to review or edit the script instead of running it.
 - SQL Server's messages while it runs, a notification in the corner on success, and an automatic tree refresh.
 
+<a id="engines"></a>
+## MySQL وPostgreSQL وOracle · Other engines
+
+<div dir="rtl">
+
+يمكنك إدارة قواعد **MySQL** و**PostgreSQL** و**Oracle** من نفس الشاشة وبجانب سيرفرات SQL Server.
+
+**الاتصال:** في نافذة **الاتصال بسيرفر** اختر المحرك من الأزرار في الأعلى، ثم اكتب:
+- **الجهاز** و**المنفذ** (يُملأ تلقائياً: 3306 لـ MySQL، و5432 لـ PostgreSQL، و1521 لـ Oracle).
+- **اسم المستخدم** و**كلمة المرور**.
+- **قاعدة البيانات** (اختيارية في MySQL وPostgreSQL)، أو **اسم الخدمة** في Oracle مثل `FREEPDB1` أو `ORCLPDB1`.
+
+أو اختر **نص الاتصال** والصق نص اتصال المحرك كما هو. يتذكر البرنامج آخر محرك وجهاز ومنفذ ومستخدم، بدون كلمة المرور.
+
+**ما يعمل مع المحركات الثلاثة:**
+
+| الميزة | MySQL | PostgreSQL | Oracle |
+|---|---|---|---|
+| مستكشف الكائنات | قواعد البيانات ← الجداول، العروض، الإجراءات، الدوال | قواعد البيانات ← المخططات ← الجداول، العروض، الدوال، المتسلسلات | المخططات ← الجداول، العروض، الإجراءات، الدوال، الحزم، المتسلسلات، المرادفات |
+| داخل الجدول | الأعمدة، المفاتيح، الفهارس، المشغلات | الأعمدة، المفاتيح، الفهارس، المشغلات | الأعمدة، المفاتيح، الفهارس، المشغلات |
+| الأمان | المستخدمون | الأدوار | المخططات (المستخدمون) |
+| تبديل القاعدة من محرر الاستعلامات | نعم | نعم (يعيد الاتصال) | يبدّل المخطط الحالي |
+
+- **محرر الاستعلامات:** افصل الجمل بـ `;`. يدعم `DELIMITER` في MySQL، وكتل `$$` في PostgreSQL، وكتل PL/SQL في Oracle التي تنتهي بسطر فيه `/` وحده. كل جملة تُنفذ وحدها، والخطأ يظهر برقم السطر الصحيح، وتظهر رسائل `NOTICE` في PostgreSQL ورسائل التحذير في MySQL.
+- **النتائج:** نفس العرض الأفقي والرأسي، وشارات المفاتيح على الأعمدة (PK وFK وUQ والترقيم التلقائي والأعمدة المحسوبة)، وفتح السجل المرتبط من المفتاح الأجنبي.
+- **تعديل الخلايا:** بالضغط المزدوج أو من نافذة العرض، إذا كانت النتيجة من جدول واحد وفيها مفتاحه الأساسي. يُحفظ التعديل بجملة `UPDATE` بمعاملات داخل معاملة (transaction)، ولا يُحفظ إلا إذا تأثر صف واحد بالضبط.
+- **القائمة بالزر الأيمن:** عرض أول 1000 صف، وتعديل أول 200 صف، وسكربت CREATE / DROP / SELECT / INSERT / UPDATE / DELETE، وتفريغ الجدول (TRUNCATE)، وإعادة التسمية، والحذف، وقاعدة بيانات أو مخطط جديد، وقوالب الجداول والعروض والإجراءات والدوال.
+- **السكربتات:** تأتي من المحرك نفسه: `SHOW CREATE` في MySQL، ودوال `pg_get_*def` في PostgreSQL، و`DBMS_METADATA.GET_DDL` في Oracle.
+- **مراقب النشاط** و**الخصائص** على السيرفر: يفتحان استعلاماً جاهزاً يعرض الجلسات أو الإعدادات، مع تعليق يشرح كيف تنهي جلسة.
+
+**خاص بـ SQL Server فقط:** مصمم الجداول، والنسخ الاحتياطي والاستعادة، والإرفاق والفصل، ونوافذ تسجيلات الدخول والمستخدمين والأدوار، وSQL Server Agent، وخصائص قاعدة البيانات، وإنشاء السكربتات، وفحص الصياغة، وترحيل البيانات.
+
+</div>
+
+You can manage **MySQL**, **PostgreSQL** and **Oracle** databases from the same screen, next to your SQL Server servers.
+
+**Connecting:** in **Connect to server**, pick the engine with the buttons at the top, then enter:
+- **Host** and **port** (filled in for you: 3306 for MySQL, 5432 for PostgreSQL, 1521 for Oracle).
+- **User name** and **password**.
+- **Database** (optional for MySQL and PostgreSQL), or the **service name** for Oracle, such as `FREEPDB1` or `ORCLPDB1`.
+
+Or choose **Connection string** and paste the engine's connection string as is. The app remembers the last engine, host, port and user, but not the password.
+
+**What works on all three engines:**
+
+| Feature | MySQL | PostgreSQL | Oracle |
+|---|---|---|---|
+| Object Explorer | Databases → tables, views, procedures, functions | Databases → schemas → tables, views, functions, sequences | Schemas → tables, views, procedures, functions, packages, sequences, synonyms |
+| Inside a table | Columns, keys, indexes, triggers | Columns, keys, indexes, triggers | Columns, keys, indexes, triggers |
+| Security | Users | Roles | Schemas (users) |
+| Switching database in the query editor | Yes | Yes (reconnects) | Switches the current schema |
+
+- **Query editor:** end statements with `;`. It understands MySQL `DELIMITER`, PostgreSQL `$$` blocks, and Oracle PL/SQL blocks ended by a line with only `/`. Each statement runs on its own, errors show the right line number, and PostgreSQL `NOTICE`s and MySQL warnings appear in Messages.
+- **Results:** the same horizontal and vertical views, key badges on columns (PK, FK, UQ, auto-increment and computed), and opening the related record from a foreign key.
+- **Editing cells:** double-click or use the value viewer, when the result comes from one table and includes its primary key. The change is saved with a parameterized `UPDATE` inside a transaction, and only if exactly one row is affected.
+- **Right-click menu:** Select Top 1000 Rows, Edit Top 200 Rows, Script CREATE / DROP / SELECT / INSERT / UPDATE / DELETE, Truncate, Rename, Delete, New database or schema, and templates for tables, views, procedures and functions.
+- **Scripts** come from the engine itself: `SHOW CREATE` in MySQL, the `pg_get_*def` functions in PostgreSQL, and `DBMS_METADATA.GET_DDL` in Oracle.
+- **Activity Monitor** and **Properties** on the server open a ready-made query that lists sessions or settings, with a comment on how to end a session.
+
+**SQL Server only:** the table designer, backup and restore, attach and detach, the login / user / role dialogs, SQL Server Agent, database properties, Generate Scripts, Parse, and data migration.
+
 ---
 
 # ترحيل البيانات · Data Migration
@@ -972,14 +1048,16 @@ When you press **Copy**, the app compares each table's columns in source and des
 - **الخصوصية:** الاتصالات وكلمات المرور تبقى في الذاكرة فقط ولا تُحفظ على القرص. يُحفظ فقط اللغة والوضع وأسماء السيرفرات الأخيرة، بدون كلمات مرور.
 - **Docker ولينكس:** لا يدعمان مصادقة ويندوز. استخدم مصادقة SQL Server.
 - **Smart App Control** في ويندوز قد يمنع تشغيل نسخ البناء غير الموقّعة برسالة <span dir="ltr">*"An Application Control policy has blocked this file"*</span>. أعد البناء (مثلاً بإعدادات Release أو Debug الأخرى) أو وقّع البرنامج بشهادة Code Signing. لا يُنصح بإيقاف Smart App Control لأنه لا يمكن إعادة تفعيله إلا بإعادة تثبيت ويندوز.
-- **الصلاحيات:** بعض الميزات تحتاج صلاحيات على السيرفر، مثل `sysadmin` لاستعراض الملفات و`VIEW SERVER STATE` لمراقب النشاط.
+- **الصلاحيات:** بعض الميزات تحتاج صلاحيات على السيرفر، مثل `sysadmin` لاستعراض الملفات و`VIEW SERVER STATE` لمراقب النشاط. في Oracle يحتاج مراقب النشاط صلاحية القراءة من `V$SESSION` (مثل `SELECT_CATALOG_ROLE`).
+- **Oracle:** رسائل الأخطاء تظهر بالإنجليزية مثل باقي المحركات، حتى لو كانت لغة ويندوز عربية.
 
 </div>
 
 - **Privacy:** connections and passwords are kept in memory only and never written to disk. Only the language, the theme and recent server names (no passwords) are saved.
 - **Docker and Linux** don't support Windows Authentication; use SQL Server Authentication.
 - Windows **Smart App Control** may block unsigned builds with *"An Application Control policy has blocked this file"*. Rebuild (e.g. the other configuration) or sign the app with a code-signing certificate. Turning Smart App Control off isn't recommended: it can only be turned back on by reinstalling Windows.
-- **Permissions:** some features need server permissions, such as `sysadmin` for browsing files and `VIEW SERVER STATE` for the Activity Monitor.
+- **Permissions:** some features need server permissions, such as `sysadmin` for browsing files and `VIEW SERVER STATE` for the Activity Monitor. On Oracle, the Activity Monitor needs read access to `V$SESSION` (e.g. `SELECT_CATALOG_ROLE`).
+- **Oracle** error messages are shown in English like the other engines, even when Windows is set to Arabic.
 
 <a id="structure"></a>
 ## هيكل المشروع · Project structure
@@ -990,6 +1068,7 @@ When you press **Copy**, the app compares each table's columns in source and des
 | `Components/Manager` | واجهة الإدارة: المستكشف والمحرر والمصمم والنوافذ | Manager UI: Object Explorer, query editor, designers, dialogs |
 | `Components/Shared` | واجهة الترحيل | Migration UI |
 | `Services/Manager` | منطق الإدارة: تنفيذ الاستعلامات والبيانات الوصفية والسكربتات والتعديل والإدارة | Manager logic: query runner, metadata, scripting, data editing, administration |
+| `Services/Manager/Engines` | دعم MySQL وPostgreSQL وOracle: الاتصال والمستكشف والسكربتات وتقسيم الجمل | MySQL, PostgreSQL and Oracle support: connections, explorer, scripting, statement splitting |
 | `Services` | منطق الترحيل (`SqlServerService` و`TableCopyJob`) | Migration logic (`SqlServerService`, `TableCopyJob`) |
 | `Models` | نماذج البيانات | Data models |
 | `Localization` | النصوص العربية والإنجليزية (`Texts.cs` و`ManagerTexts.cs`) | Arabic / English texts (`Texts.cs`, `ManagerTexts.cs`) |

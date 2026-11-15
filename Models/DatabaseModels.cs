@@ -20,6 +20,8 @@ public sealed record ServerInfo(
     // EngineEdition 5 = Azure SQL Database, 8 = Azure SQL Managed Instance
     public string FriendlyVersion => EngineEdition switch
     {
+        // MySQL, PostgreSQL, Oracle: Edition holds the product name
+        -1 => $"{Edition} {ProductVersion}",
         5 => "Azure SQL Database",
         8 => "Azure SQL Managed Instance",
         _ => MajorVersion switch

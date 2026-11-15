@@ -153,6 +153,14 @@ window.sqlManager = (() => {
         refreshGutter(textarea);
     }
 
+    /// Focuses an input found by selector and selects its text (grid cell editing)
+    function focusSelect(selector) {
+        const element = document.querySelector(selector);
+        if (!element) return;
+        element.focus();
+        if (element.select) element.select();
+    }
+
     function focus(element) {
         if (typeof element === 'string') element = document.querySelector(element);
         if (element) element.focus();
@@ -262,7 +270,7 @@ window.sqlManager = (() => {
     }
 
     return {
-        registerEditor, unregisterEditor, refreshGutter, getEditorState, focusLine, focus,
+        registerEditor, unregisterEditor, refreshGutter, getEditorState, focusLine, focus, focusSelect,
         setUnloadGuard, initSplitter, clampToViewport, download, copyText, clickElement
     };
 })();

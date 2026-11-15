@@ -56,9 +56,16 @@
                         {
                             var server = (Session.Selected ?? Session.Roots[0]).Server;
                             <button class="btn" @onclick="() => Session.OpenQuery(server, Session.Selected?.Database)"><Icon Name="query" /> @L["NewQuery"]</button>
-                            <button class="btn" @onclick="() => Actions.NewDatabase(server)"><Icon Name="database" /> @L["NewDatabase"]</button>
-                            <button class="btn" @onclick="() => Actions.Restore(server, null)"><Icon Name="backup" /> @L["RestoreDatabase"]</button>
-                            <button class="btn" @onclick="() => Actions.ActivityMonitor(server)"><Icon Name="activity" /> @L["ActivityMonitor"]</button>
+                            @if (server.IsSqlServer)
+                            {
+                                <button class="btn" @onclick="() => Actions.NewDatabase(server)"><Icon Name="database" /> @L["NewDatabase"]</button>
+                                <button class="btn" @onclick="() => Actions.Restore(server, null)"><Icon Name="backup" /> @L["RestoreDatabase"]</button>
+                                <button class="btn" @onclick="() => Actions.ActivityMonitor(server)"><Icon Name="activity" /> @L["ActivityMonitor"]</button>
+                            }
+                            else
+                            {
+                                <button class="btn" @onclick="() => Session.OpenQuery(server, null, Dialects.For(server).ActivitySql, execute: true)"><Icon Name="activity" /> @L["ActivityMonitor"]</button>
+                            }
                         }
                     </div>
                     <ul class="welcome-tips">
@@ -150,7 +157,7 @@
             if (query.IsRunning && !await JS.InvokeAsync<bool>("confirm", L["ConfirmCloseRunning"]))
                 return;
 
-            if (!query.IsRunning && query.Connection is { State: ConnectionState.Open } connection)
+            if (!query.IsRunning && query.Connection is SqlConnection { State: ConnectionState.Open } connection)
             {
                 try
                 {

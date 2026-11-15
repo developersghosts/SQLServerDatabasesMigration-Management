@@ -31,6 +31,8 @@ public static class SqlValues
         double f => f.ToString("R", Inv),
         float f => f.ToString("R", Inv),
         IFormattable f => f.ToString(null, Inv),
+        // PostgreSQL arrays
+        Array array => "{" + string.Join(",", array.Cast<object?>().Select(v => v is null ? "NULL" : Display(v, string.Empty))) + "}",
         _ => Convert.ToString(value, Inv) ?? string.Empty
     };
 

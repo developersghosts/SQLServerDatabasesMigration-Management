@@ -67,7 +67,9 @@
 
     private string Label => Node.LabelKey is not null ? L[Node.LabelKey] : Node.Label;
 
-    private string IconClass => Node.IsFolder ? "c-folder" : $"c-{Node.Kind.ToString().ToLowerInvariant()}";
+    // Foreign keys (and FK columns) get their own key color
+    private string IconClass => Node.IsFolder ? "c-folder"
+        : $"c-{Node.Kind.ToString().ToLowerInvariant()}{(Node.SubType is "F" or "FK" ? " fk-key" : "")}";
 
     /// <summary>The filter hides objects, never servers, databases or folders.</summary>
     private bool IsVisible =>

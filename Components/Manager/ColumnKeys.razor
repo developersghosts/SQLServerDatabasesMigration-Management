@@ -1,0 +1,30 @@
+@inject Localizer L
+
+@* Key badges of a result column: PK, FK, UQ, identity, computed *@
+@if (Info is { } info)
+{
+    @if (info.IsPrimaryKey)
+    {
+        <span class="key-badge pk" title="@L["PrimaryKey"]"><Icon Name="key" /></span>
+    }
+    @if (info.ForeignKey is not null)
+    {
+        <span class="key-badge fk" title="@($"{L["ForeignKey"]} → {info.ForeignKeyDisplay}")"><Icon Name="key" /></span>
+    }
+    @if (info.IsUnique && !info.IsPrimaryKey)
+    {
+        <span class="key-badge uq" title="@L["UniqueKey"]">UQ</span>
+    }
+    @if (info.IsIdentity)
+    {
+        <span class="key-badge id" title="Identity">ID</span>
+    }
+    @if (info.IsComputed)
+    {
+        <span class="key-badge cc" title="@L["Computed"]">ƒx</span>
+    }
+}
+
+@code {
+    [Parameter] public ResultColumnInfo? Info { get; set; }
+}

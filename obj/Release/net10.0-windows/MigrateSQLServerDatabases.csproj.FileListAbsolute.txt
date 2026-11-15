@@ -63,8 +63,6 @@ F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\scopedcss
 F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\scopedcss\projectbundle\MigrateSQLServerDatabases.bundle.scp.css
 F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\compressed\883w1bf3bn-{0}-gnpa0fqj9t-gnpa0fqj9t.gz
 F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\compressed\anrcz0v2df-{0}-wb0tyahw6y-wb0tyahw6y.gz
-F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\compressed\7lyja7xzrg-{0}-ovmu18429b-ovmu18429b.gz
-F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\compressed\ud0xjy3wsc-{0}-mzlodpexug-mzlodpexug.gz
 F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\compressed\01c9fyi3bo-{0}-abdmv1u4y3-abdmv1u4y3.gz
 F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\compressed\34zym65v8r-{0}-xmryko9e6j-xmryko9e6j.gz
 F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\compressed\zzgq2pc167-{0}-7d17r9czpp-7d17r9czpp.gz
@@ -81,3 +79,26 @@ F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\refint\Mi
 F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\MigrateSQLServerDatabases.pdb
 F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\MigrateSQLServerDatabases.genruntimeconfig.cache
 F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\ref\MigrateSQLServerDatabases.dll
+F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\MigrateSQLServerDatabases.sourcelink.json
+F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\compressed\7lyja7xzrg-{0}-985vqdmpi0-985vqdmpi0.gz
+C:\Users\Omar-Fathy\AppData\Local\Temp\claude\mgr-build\runtimes\win-x86\native\WebView2Loader.dll
+C:\Users\Omar-Fathy\AppData\Local\Temp\claude\mgr-build\runtimes\win-x64\native\WebView2Loader.dll
+C:\Users\Omar-Fathy\AppData\Local\Temp\claude\mgr-build\runtimes\win-arm64\native\WebView2Loader.dll
+C:\Users\Omar-Fathy\AppData\Local\Temp\claude\mgr-build\appsettings.Development.json
+C:\Users\Omar-Fathy\AppData\Local\Temp\claude\mgr-build\appsettings.json
+C:\Users\Omar-Fathy\AppData\Local\Temp\claude\mgr-build\MigrateSQLServerDatabases.staticwebassets.runtime.json
+C:\Users\Omar-Fathy\AppData\Local\Temp\claude\mgr-build\MigrateSQLServerDatabases.staticwebassets.endpoints.json
+C:\Users\Omar-Fathy\AppData\Local\Temp\claude\mgr-build\app.ico
+C:\Users\Omar-Fathy\AppData\Local\Temp\claude\mgr-build\MigrateSQLServerDatabases.exe
+C:\Users\Omar-Fathy\AppData\Local\Temp\claude\mgr-build\MigrateSQLServerDatabases.deps.json
+C:\Users\Omar-Fathy\AppData\Local\Temp\claude\mgr-build\MigrateSQLServerDatabases.runtimeconfig.json
+C:\Users\Omar-Fathy\AppData\Local\Temp\claude\mgr-build\MigrateSQLServerDatabases.dll
+C:\Users\Omar-Fathy\AppData\Local\Temp\claude\mgr-build\MigrateSQLServerDatabases.pdb
+F:\Copy Database\MigrateSQLServerDatabases\obj\Release\net10.0-windows\compressed\ud0xjy3wsc-{0}-48lia9e0uw-48lia9e0uw.gz
+F:\Copy Database\MigrateSQLServerDatabases\bin\Release\net10.0-windows\MySqlConnector.dll
+F:\Copy Database\MigrateSQLServerDatabases\bin\Release\net10.0-windows\Npgsql.dll
+F:\Copy Database\MigrateSQLServerDatabases\bin\Release\net10.0-windows\Oracle.ManagedDataAccess.dll
+F:\Copy Database\MigrateSQLServerDatabases\bin\Release\net10.0-windows\System.DirectoryServices.Protocols.dll
+F:\Copy Database\MigrateSQLServerDatabases\bin\Release\net10.0-windows\runtimes\linux\lib\net8.0\System.DirectoryServices.Protocols.dll
+F:\Copy Database\MigrateSQLServerDatabases\bin\Release\net10.0-windows\runtimes\osx\lib\net8.0\System.DirectoryServices.Protocols.dll
+F:\Copy Database\MigrateSQLServerDatabases\bin\Release\net10.0-windows\runtimes\win\lib\net8.0\System.DirectoryServices.Protocols.dll

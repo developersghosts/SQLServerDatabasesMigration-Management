@@ -4,7 +4,7 @@
 @inject ManagerSession Session
 @inject ResultEditService Editing
 
-<div class="rgrid-wrap @(Multiple ? "multi" : "single")">
+<div class="rgrid-wrap @(Multiple ? "multi" : "single") @(Set.Vertical ? "vertical" : null)">
     <div class="rgrid-tools">
         <span class="muted">
             @if (Multiple)
@@ -17,50 +17,170 @@
         {
             <span class="badge missing">@string.Format(L["ShowingFirstRows"], Set.Rows.Count.ToString("N0"))</span>
         }
-        <span class="muted small grid-tip">@L["CellEditTip"]</span>
+
+        <div class="seg seg-sm" role="radiogroup" aria-label="@L["ViewLayout"]">
+            <button type="button" class="seg-btn @(Set.Vertical ? null : "active")" role="radio" aria-checked="@(Set.Vertical ? "false" : "true")"
+                    title="@L["ViewHorizontalHint"]" @onclick="() => SetVertical(false)">
+                <Icon Name="table" /> @L["ViewHorizontal"]
+            </button>
+            <button type="button" class="seg-btn @(Set.Vertical ? "active" : null)" role="radio" aria-checked="@(Set.Vertical ? "true" : "false")"
+                    title="@L["ViewVerticalHint"]" @onclick="() => SetVertical(true)" disabled="@(Set.Rows.Count == 0)">
+                <Icon Name="column" /> @L["ViewVertical"]
+            </button>
+        </div>
+
+        <span class="muted small grid-tip">@(Set.Vertical ? L["VerticalTip"] : L["CellEditTip"])</span>
         <span class="spacer"></span>
-        @if (selected is { } cell && cell.Row < Set.Rows.Count)
+        @if (!Set.Vertical && selected is { } cell && cell.Row < Set.Rows.Count)
         {
-            <button class="btn xs" @onclick="() => OpenAsync(cell.Row, cell.Column)" title="Enter"><Icon Name="edit" /> @L["OpenCell"]</button>
+            <button class="btn xs" @onclick="() => OpenAsync(cell.Row, cell.Column)"><Icon Name="edit" /> @L["OpenCell"]</button>
             <button class="btn xs" @onclick="CopyCellAsync" title="Ctrl+C"><Icon Name="copy" /> @L["CopyCell"]</button>
         }
         <button class="btn xs" @onclick="CopyAllAsync"><Icon Name="copy" /> @L["CopyWithHeaders"]</button>
         <button class="btn xs" @onclick="ExportAsync"><Icon Name="download" /> @L["ExportCsv"]</button>
     </div>
-    <div class="rgrid-scroll" dir="ltr" tabindex="0" @onkeydown="OnKeyAsync">
-        <table class="rgrid">
-            <thead>
-                <tr>
-                    <th class="rn"></th>
-                    @foreach (var column in Set.Columns)
-                    {
-                        <th title="@column.TypeName">@(column.Name.Length == 0 ? L["NoColumnName"] : column.Name)</th>
-                    }
-                </tr>
-            </thead>
-            <tbody>
-                <Virtualize Items="Set.Indexes" Context="rowIndex" ItemSize="25" SpacerElement="tr" OverscanCount="15">
+
+    @if (!Set.Vertical)
+    {
+        <div class="rgrid-scroll" dir="ltr" tabindex="0" @onkeydown="OnKeyAsync">
+            <table class="rgrid">
+                <thead>
                     <tr>
-                        <td class="rn">@(rowIndex + 1)</td>
-                        @{
-                            var row = Set.Rows[rowIndex];
-                        }
-                        @for (var c = 0; c < row.Length; c++)
+                        <th class="rn"></th>
+                        @for (var c = 0; c < Set.Columns.Count; c++)
                         {
-                            var column = c;
-                            var value = row[column];
-                            var css = value is null ? "null" : Set.Columns[column].IsNumeric ? "num" : null;
-                            var isSelected = selected is { } s && s.Row == rowIndex && s.Column == column;
-                            @* dir="auto": Arabic values read right-to-left, English left-to-right *@
-                            <td class="@css @(isSelected ? "sel" : null)" dir="auto"
-                                @onclick="() => selected = (rowIndex, column)"
-                                @ondblclick="() => OpenAsync(rowIndex, column)">@(value ?? "NULL")</td>
+                            var column = Set.Columns[c];
+                            <th title="@ColumnTitle(c)">
+                                <span class="th-inner">
+                                    <ColumnKeys Info="@InfoFor(c)" />
+                                    <span>@(column.Name.Length == 0 ? L["NoColumnName"] : column.Name)</span>
+                                </span>
+                            </th>
                         }
                     </tr>
-                </Virtualize>
-            </tbody>
-        </table>
-    </div>
+                </thead>
+                <tbody>
+                    <Virtualize Items="Set.Indexes" Context="rowIndex" ItemSize="25" SpacerElement="tr" OverscanCount="15">
+                        <tr>
+                            <td class="rn" title="@L["OpenRecord"]" @ondblclick="() => ShowRecord(rowIndex)">@(rowIndex + 1)</td>
+                            @{
+                                var row = Set.Rows[rowIndex];
+                            }
+                            @for (var c = 0; c < row.Length; c++)
+                            {
+                                var column = c;
+                                if (editing is { } inline && inline.Row == rowIndex && inline.Column == column)
+                                {
+                                    <td class="editing">
+                                        <input id="@EditorId" class="cell-edit" dir="auto" spellcheck="false"
+                                               value="@inline.Text" placeholder="NULL" disabled="@inline.Saving"
+                                               @oninput="e => inline.Text = e.Value as string ?? string.Empty"
+                                               @onkeydown="OnEditKeyAsync" @onkeydown:stopPropagation="true"
+                                               @onblur="CommitEditAsync" />
+                                    </td>
+                                }
+                                else
+                                {
+                                    var value = row[column];
+                                    var css = value is null ? "null" : Set.Columns[column].IsNumeric ? "num" : null;
+                                    var isSelected = selected is { } s && s.Row == rowIndex && s.Column == column;
+                                    @* dir="auto": Arabic values read right-to-left, English left-to-right *@
+                                    <td class="@css @(isSelected ? "sel" : null) @(IsEditable(column) ? "can-edit" : null)" dir="auto"
+                                        @onclick="() => selected = (rowIndex, column)"
+                                        @ondblclick="() => StartEditAsync(rowIndex, column)">@(value ?? "NULL")</td>
+                                }
+                            }
+                        </tr>
+                    </Virtualize>
+                </tbody>
+            </table>
+        </div>
+    }
+    else if (Set.Rows.Count > 0)
+    {
+        var record = Math.Clamp(Set.Record, 0, Set.Rows.Count - 1);
+        var values = Set.Rows[record];
+        <div class="record-view">
+            <div class="record-nav">
+                <button class="icon-btn" title="@L["FirstRecord"]" disabled="@(record == 0)" @onclick="() => GoToAsync(0)"><Icon Name="chevron" Class="nav-back" /><Icon Name="chevron" Class="nav-back" /></button>
+                <button class="icon-btn" title="@L["PrevRecord"]" disabled="@(record == 0)" @onclick="() => GoToAsync(record - 1)"><Icon Name="chevron" Class="nav-back" /></button>
+                <span class="record-pos">
+                    @L["Record"]
+                    <input class="input sm record-input" type="number" min="1" max="@Set.Rows.Count" value="@(record + 1)"
+                           @onchange="e => GoToAsync(int.TryParse(e.Value as string, out var n) ? n - 1 : record)" />
+                    @L["Of"] <bdi>@Set.Rows.Count.ToString("N0")</bdi>
+                </span>
+                <button class="icon-btn" title="@L["NextRecord"]" disabled="@(record >= Set.Rows.Count - 1)" @onclick="() => GoToAsync(record + 1)"><Icon Name="chevron" /></button>
+                <button class="icon-btn" title="@L["LastRecord"]" disabled="@(record >= Set.Rows.Count - 1)" @onclick="() => GoToAsync(Set.Rows.Count - 1)"><Icon Name="chevron" /><Icon Name="chevron" /></button>
+                <span class="spacer"></span>
+                @if (drafts.Count > 0)
+                {
+                    <span class="muted small">@string.Format(L["UnsavedFields"], drafts.Count)</span>
+                    <button class="btn xs" @onclick="() => drafts.Clear()">@L["DiscardChanges"]</button>
+                    <button class="btn xs primary" @onclick="SaveAllAsync" disabled="@savingFields"><Icon Name="save" /> @L["SaveAll"]</button>
+                }
+            </div>
+
+            <div class="record-fields">
+                @for (var c = 0; c < Set.Columns.Count; c++)
+                {
+                    var column = c;
+                    var meta = Set.Columns[column];
+                    var info = InfoFor(column);
+                    var original = values[column];
+                    var changed = drafts.TryGetValue(column, out var draft);
+                    var shown = changed ? draft : original;
+                    var multiline = (shown?.Length ?? 0) > 80 || shown?.Contains('\n') == true;
+                    <div class="field-row @(changed ? "changed" : null)">
+                        <div class="field-name">
+                            <span class="field-title">
+                                <ColumnKeys Info="@info" />
+                                <span class="mono">@(meta.Name.Length == 0 ? L["NoColumnName"] : meta.Name)</span>
+                            </span>
+                            <span class="field-meta mono">
+                                @(info?.Type ?? meta.TypeName)@(info is null ? "" : info.IsNullable ? " · NULL" : " · NOT NULL")
+                            </span>
+                            @if (info?.ForeignKey is not null)
+                            {
+                                <span class="field-fk mono" title="@L["ForeignKey"]">→ @info.ForeignKeyDisplay</span>
+                            }
+                        </div>
+                        <div class="field-value">
+                            @if (IsEditable(column))
+                            {
+                                if (multiline)
+                                {
+                                    <textarea class="field-input" dir="auto" spellcheck="false" rows="@Math.Min(8, Math.Max(2, (shown?.Length ?? 0) / 80 + 1))"
+                                              placeholder="NULL" value="@shown" disabled="@savingFields"
+                                              @oninput="e => SetDraft(record, column, e.Value as string)"
+                                              @onkeydown="e => OnFieldKeyAsync(e, record, column, true)"></textarea>
+                                }
+                                else
+                                {
+                                    <input class="field-input" dir="auto" spellcheck="false" placeholder="NULL" value="@shown" disabled="@savingFields"
+                                           @oninput="e => SetDraft(record, column, e.Value as string)"
+                                           @onkeydown="e => OnFieldKeyAsync(e, record, column, false)" />
+                                }
+                                @if (changed)
+                                {
+                                    <button class="icon-btn" title="@L["Save"]" @onclick="() => SaveFieldAsync(record, column)" disabled="@savingFields"><Icon Name="save" /></button>
+                                    <button class="icon-btn" title="@L["Undo"]" @onclick="() => drafts.Remove(column)"><Icon Name="close" /></button>
+                                }
+                            }
+                            else
+                            {
+                                <div class="field-ro @(original is null ? "null" : null)" dir="auto" title="@ReadOnlyReason(column)">@(original ?? "NULL")</div>
+                            }
+                            @if (info?.ForeignKey is not null && original is not null)
+                            {
+                                <button class="icon-btn" title="@L["OpenRelated"]" @onclick="() => OpenRelated(info, original)"><Icon Name="open" /></button>
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+    }
 </div>
 
 @if (viewer is { } v)
@@ -80,7 +200,7 @@
             else if (v.Target is { } target)
             {
                 <div class="muted small">
-                    @L["SavesTo"] <bdi class="mono">@($"{Sql.Q(target.Database)}.{target.Table}.{Sql.Q(target.Column)}")</bdi>
+                    @L["SavesTo"] <bdi class="mono">@($"{Quote(target.Database)}.{target.Table}.{Quote(target.Column)}")</bdi>
                     · @L["RowMatchedBy"] <bdi class="mono">@string.Join(", ", target.Keys.Select(k => k.Column))</bdi>
                 </div>
             }
@@ -110,7 +230,7 @@
             <button class="btn" @onclick="CloseViewer" disabled="@v.Saving">@L["Close"]</button>
             @if (v.Target is not null)
             {
-                <button class="btn primary" @onclick="SaveAsync" disabled="@(!v.Changed || v.Saving)">
+                <button class="btn primary" @onclick="SaveViewerAsync" disabled="@(!v.Changed || v.Saving)">
                     @if (v.Saving)
                     {
                         <span class="spinner tiny"></span>
@@ -132,8 +252,25 @@
     [Parameter] public int Index { get; set; }
     [Parameter] public bool Multiple { get; set; }
 
+    private readonly string EditorId = "ce-" + Guid.NewGuid().ToString("N")[..8];
+    private ResultEditInfo? edit;
     private (int Row, int Column)? selected;
+    private InlineEdit? editing;
+    private bool focusEditor;
     private CellViewer? viewer;
+
+    // Vertical view: unsaved field values of the shown record (null = NULL)
+    private readonly Dictionary<int, string?> drafts = [];
+    private bool savingFields;
+
+    private sealed class InlineEdit
+    {
+        public required int Row { get; init; }
+        public required int Column { get; init; }
+        public required string? Original { get; init; }
+        public string Text { get; set; } = string.Empty;
+        public bool Saving { get; set; }
+    }
 
     private sealed class CellViewer
     {
@@ -154,11 +291,241 @@
         public bool Changed => IsNull ? Original is not null : Original != Text;
     }
 
+    protected override async Task OnInitializedAsync()
+    {
+        // Column keys and editability come from SQL Server's description of the query; it doesn't run the query again
+        try
+        {
+            edit = await Editing.DescribeAsync(Server, Set);
+        }
+        catch (Exception)
+        {
+            edit = null;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (focusEditor)
+        {
+            focusEditor = false;
+            await JS.InvokeVoidAsync("sqlManager.focusSelect", "#" + EditorId);
+        }
+    }
+
+    private ResultColumnInfo? InfoFor(int column) => edit?.Info.GetValueOrDefault(column);
+
+    private bool IsEditable(int column) => edit?.Columns.ContainsKey(column) == true;
+
+    private string ColumnTitle(int column)
+    {
+        var meta = Set.Columns[column];
+        if (InfoFor(column) is not { } info)
+            return meta.TypeName;
+
+        var parts = new List<string> { $"{info.Type} {(info.IsNullable ? "NULL" : "NOT NULL")}" };
+        if (info.IsPrimaryKey) parts.Add(L["PrimaryKey"]);
+        if (info.ForeignKey is not null) parts.Add($"{L["ForeignKey"]} → {info.ForeignKeyDisplay}");
+        if (info.IsUnique && !info.IsPrimaryKey) parts.Add(L["UniqueKey"]);
+        if (info.IsIdentity) parts.Add("Identity");
+        if (info.IsComputed) parts.Add(L["Computed"]);
+        parts.Add($"{info.Schema}.{info.Table}.{info.Column}");
+        if (!IsEditable(column)) parts.Add(L["ReadOnlyField"]);
+        return string.Join(" · ", parts);
+    }
+
+    private string ReadOnlyReason(int column) =>
+        edit is null ? L["NotEditableUnknown"]
+        : edit.Columns.Count == 0 && edit.Reason is not null ? L[edit.Reason]
+        : L["NotEditableColumn"];
+
+    private static bool TooLongForCell(string? value) =>
+        value is not null && (value.Length > 300 || value.Contains('\n'));
+
+    // ---------- Layout ----------
+
+    private void SetVertical(bool vertical)
+    {
+        if (vertical && selected is { } cell)
+            Set.Record = cell.Row;
+        editing = null;
+        drafts.Clear();
+        Set.Vertical = vertical;
+    }
+
+    private void ShowRecord(int row)
+    {
+        selected = (row, selected?.Column ?? 0);
+        SetVertical(true);
+    }
+
+    private async Task GoToAsync(int record)
+    {
+        record = Math.Clamp(record, 0, Math.Max(Set.Rows.Count - 1, 0));
+        if (record == Set.Record)
+            return;
+        if (drafts.Count > 0 && !await JS.InvokeAsync<bool>("confirm", L["DiscardConfirm"]))
+            return;
+        drafts.Clear();
+        Set.Record = record;
+        selected = (record, selected?.Column ?? 0);
+    }
+
+    // ---------- Saving ----------
+
+    /// <summary>Saves one cell to its table and updates the grid. Errors are shown as a notification.</summary>
+    private async Task<bool> SaveCellAsync(int row, int column, string? text)
+    {
+        if (edit?.Columns.GetValueOrDefault(column) is not { } target)
+            return false;
+
+        try
+        {
+            Set.Rows[row][column] = await Editing.UpdateAsync(Server, target, Set.Rows[row], text);
+            return true;
+        }
+        catch (Exception ex) when (ex is FormatException or InvalidOperationException or System.Data.Common.DbException)
+        {
+            Session.Toast($"{Set.Columns[column].Name}: {ex.Message}", ToastKind.Error);
+            return false;
+        }
+    }
+
+    // ---------- Horizontal: editing in the cell ----------
+
+    private async Task StartEditAsync(int row, int column)
+    {
+        if (row >= Set.Rows.Count)
+            return;
+
+        selected = (row, column);
+        var value = Set.Rows[row][column];
+
+        // Long or multi-line values, and read-only cells (to show why), open in the viewer
+        if (!IsEditable(column) || TooLongForCell(value))
+        {
+            await OpenAsync(row, column);
+            return;
+        }
+
+        editing = new InlineEdit { Row = row, Column = column, Original = value, Text = value ?? string.Empty };
+        focusEditor = true;
+    }
+
+    private async Task OnEditKeyAsync(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await CommitEditAsync();
+        else if (e.Key == "Escape")
+            editing = null;
+    }
+
+    private async Task CommitEditAsync()
+    {
+        if (editing is not { Saving: false } current)
+            return;
+
+        // An empty cell that was NULL stays NULL
+        var text = current.Text.Length == 0 && current.Original is null ? null : current.Text;
+        if (text == current.Original)
+        {
+            editing = null;
+            return;
+        }
+
+        current.Saving = true;
+        var ok = await SaveCellAsync(current.Row, current.Column, text);
+        current.Saving = false;
+        if (ok)
+        {
+            Session.Toast(L["CellSaved"]);
+            editing = null;
+        }
+        else
+        {
+            focusEditor = true;
+        }
+    }
+
+    // ---------- Vertical: editing fields of one record ----------
+
+    private void SetDraft(int record, int column, string? text)
+    {
+        var original = Set.Rows[record][column];
+        var value = string.IsNullOrEmpty(text) && original is null ? null : text;
+        if (value == original)
+            drafts.Remove(column);
+        else
+            drafts[column] = value;
+    }
+
+    private async Task OnFieldKeyAsync(KeyboardEventArgs e, int record, int column, bool multiline)
+    {
+        if (e.Key == "Escape")
+            drafts.Remove(column);
+        else if (e.Key == "Enter" && (!multiline || e.CtrlKey) && drafts.ContainsKey(column))
+            await SaveFieldAsync(record, column);
+    }
+
+    private async Task SaveFieldAsync(int record, int column)
+    {
+        if (!drafts.TryGetValue(column, out var value))
+            return;
+
+        savingFields = true;
+        if (await SaveCellAsync(record, column, value))
+        {
+            drafts.Remove(column);
+            Session.Toast(L["CellSaved"]);
+        }
+
+        savingFields = false;
+    }
+
+    private async Task SaveAllAsync()
+    {
+        savingFields = true;
+        var record = Set.Record;
+        var saved = 0;
+        foreach (var (column, value) in drafts.ToList())
+        {
+            if (!await SaveCellAsync(record, column, value))
+                break;
+            drafts.Remove(column);
+            saved++;
+        }
+
+        savingFields = false;
+        if (saved > 0)
+            Session.Toast(string.Format(L["FieldsSaved"], saved));
+    }
+
+    /// <summary>Opens the record a foreign key points to.</summary>
+    private void OpenRelated(ResultColumnInfo info, string value)
+    {
+        var (schema, table, column) = info.ForeignKey!.Value;
+        if (!Server.IsSqlServer)
+        {
+            var dialect = Dialects.For(Server);
+            Session.OpenQuery(Server, Server.Engine == DatabaseEngine.Oracle ? schema : info.Database,
+                dialect.SelectWhere(dialect.Name(Server.Engine == DatabaseEngine.MySql ? null : schema, table), column, value, 100), execute: true);
+            return;
+        }
+
+        Session.OpenQuery(Server, info.Database,
+            $"SELECT TOP (100) *\n  FROM {Sql.Q(schema, table)}\n WHERE {Sql.Q(column)} = {Sql.Lit(value)};", execute: true);
+    }
+
+    private string Quote(string? name) => Server.IsSqlServer ? Sql.Q(name) : Dialects.For(Server).Q(name);
+
+    // ---------- Viewer (long values and read-only cells) ----------
+
     private async Task OpenAsync(int row, int column)
     {
         if (row >= Set.Rows.Count)
             return;
 
+        editing = null;
         selected = (row, column);
         var value = Set.Rows[row][column];
         var info = Set.Columns[column];
@@ -177,8 +544,9 @@
 
         try
         {
-            var edit = await Editing.DescribeAsync(Server, Set);
-            if (edit.Columns.TryGetValue(column, out var target))
+            var result = edit ?? await Editing.DescribeAsync(Server, Set);
+            edit = result;
+            if (result.Columns.TryGetValue(column, out var target))
             {
                 // Values cut for display can't be saved back
                 if (value is not null && (value.Length >= 65535 || (value.StartsWith("0x", StringComparison.Ordinal) && value.EndsWith('…'))))
@@ -188,8 +556,8 @@
             }
             else
             {
-                v.Reason = edit.Columns.Count > 0 ? "NotEditableColumn" : edit.Reason ?? "NotEditableUnknown";
-                v.Detail = edit.Detail;
+                v.Reason = result.Columns.Count > 0 ? "NotEditableColumn" : result.Reason ?? "NotEditableUnknown";
+                v.Detail = result.Detail;
             }
         }
         catch (Exception ex)
@@ -209,7 +577,7 @@
             viewer = null;
     }
 
-    private async Task SaveAsync()
+    private async Task SaveViewerAsync()
     {
         if (viewer is not { Target: { } target } v)
             return;
@@ -218,12 +586,11 @@
         v.Error = null;
         try
         {
-            var shown = await Editing.UpdateAsync(Server, target, Set.Rows[v.Row], v.IsNull ? null : v.Text);
-            Set.Rows[v.Row][v.Column] = shown;
+            Set.Rows[v.Row][v.Column] = await Editing.UpdateAsync(Server, target, Set.Rows[v.Row], v.IsNull ? null : v.Text);
             Session.Toast(L["CellSaved"]);
             viewer = null;
         }
-        catch (Exception ex) when (ex is FormatException or InvalidOperationException or SqlException)
+        catch (Exception ex) when (ex is FormatException or InvalidOperationException or System.Data.Common.DbException)
         {
             v.Error = ex.Message;
         }
@@ -232,6 +599,8 @@
             v.Saving = false;
         }
     }
+
+    // ---------- Copy / export ----------
 
     private async Task CopyAsync(string text)
     {
@@ -251,9 +620,11 @@
 
     private async Task OnKeyAsync(KeyboardEventArgs e)
     {
+        if (editing is not null)
+            return;
         if ((e.CtrlKey || e.MetaKey) && e.Key is "c" or "C")
             await CopyCellAsync();
         else if (e.Key is "Enter" or "F2" && selected is { } cell)
-            await OpenAsync(cell.Row, cell.Column);
+            await StartEditAsync(cell.Row, cell.Column);
     }
 }

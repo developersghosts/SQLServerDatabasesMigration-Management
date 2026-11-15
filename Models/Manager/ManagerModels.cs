@@ -4,10 +4,22 @@ using MigrateSQLServerDatabases.Services.Manager;
 
 namespace MigrateSQLServerDatabases.Models.Manager;
 
+public enum DatabaseEngine
+{
+    SqlServer,
+    MySql,
+    PostgreSql,
+    Oracle
+}
+
 /// <summary>A server connected in the Object Explorer.</summary>
-public sealed class ManagedServer(string displayName, string connectionString, ServerInfo info, string login, bool isSysAdmin)
+public sealed class ManagedServer(string displayName, string connectionString, ServerInfo info, string login, bool isSysAdmin,
+    DatabaseEngine engine = DatabaseEngine.SqlServer)
 {
     public string Id { get; } = Guid.NewGuid().ToString("N");
+
+    public DatabaseEngine Engine { get; } = engine;
+    public bool IsSqlServer => Engine == DatabaseEngine.SqlServer;
 
     /// <summary>The server name as typed (e.g. (localdb)\MSSQLLocalDB); @@SERVERNAME is in <see cref="Info"/>.</summary>
     public string DisplayName { get; } = displayName;
@@ -27,6 +39,16 @@ public sealed class ManagedServer(string displayName, string connectionString, S
 
     public string ConnectionStringFor(string? database)
     {
+        if (!IsSqlServer)
+        {
+            // MySQL and PostgreSQL open a database per connection; Oracle switches schema in the session instead
+            if (string.IsNullOrEmpty(database) || Engine == DatabaseEngine.Oracle)
+                return ConnectionString;
+            var generic = new System.Data.Common.DbConnectionStringBuilder { ConnectionString = ConnectionString };
+            generic["Database"] = database;
+            return generic.ConnectionString;
+        }
+
         var builder = new SqlConnectionStringBuilder(ConnectionString);
         if (!string.IsNullOrEmpty(database))
             builder.InitialCatalog = database;
@@ -46,7 +68,9 @@ public enum NodeKind
     SequencesFolder, Sequence, TypesFolder, UserType,
     DbSecurityFolder, UsersFolder, User, RolesFolder, Role, SchemasFolder, Schema,
     ServerSecurityFolder, LoginsFolder, Login, ServerRolesFolder, ServerRole,
-    AgentFolder, JobsFolder, Job
+    AgentFolder, JobsFolder, Job,
+    // MySQL, PostgreSQL and Oracle
+    SystemSchemasFolder, PackagesFolder, Package
 }
 
 /// <summary>A node in the Object Explorer tree. Children load the first time the node is expanded.</summary>
@@ -95,9 +119,9 @@ public sealed class ExplorerNode
 
     public string Key => key ??= Parent is null ? Server.Id : $"{Parent.Key}/{Kind}:{Schema}.{Name}";
 
-    public string QualifiedName => Sql.Name(Schema, Name);
+    public string QualifiedName => Server.IsSqlServer ? Sql.Name(Schema, Name) : Dialects.For(Server.Engine).Name(Schema, Name);
 
-    public string ParentQualifiedName => Sql.Name(ParentSchema, ParentName);
+    public string ParentQualifiedName => Server.IsSqlServer ? Sql.Name(ParentSchema, ParentName) : Dialects.For(Server.Engine).Name(ParentSchema, ParentName);
 
     /// <summary>"schema.name" for display.</summary>
     public string DisplayName => Schema is null ? Name ?? Label : $"{Schema}.{Name}";
@@ -134,7 +158,7 @@ public sealed class QueryTab : WorkspaceTab
     public bool ExecuteOnOpen { get; set; }
 
     /// <summary>Kept open like an SSMS query window, so USE, temp tables and open transactions carry over between runs.</summary>
-    public SqlConnection? Connection { get; set; }
+    public System.Data.Common.DbConnection? Connection { get; set; }
     public int? SessionId { get; set; }
     public string? ConnectionError { get; set; }
 

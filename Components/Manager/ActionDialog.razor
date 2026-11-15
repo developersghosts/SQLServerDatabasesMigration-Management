@@ -61,7 +61,7 @@
             <div class="status error">@error</div>
         }
 
-        <SqlPreview Sql="@Preview" Open="@Request.ShowSql" />
+        <SqlPreview Sql="@Preview" Open="@Request.ShowSql" TSql="@Request.Server.IsSqlServer" />
         <RunLog Run="run" />
     </ChildContent>
     <Footer>
@@ -138,13 +138,13 @@
             return;
         }
 
-        if (Request.ReleaseDatabase is { } release)
+        if (Request.ReleaseDatabase is { } release && Request.Server.IsSqlServer)
             Db.ClearPool(Request.Server.ConnectionStringFor(release));
 
-        var ok = await run.RunAsync(Request.Server.ConnectionStringFor(Request.Database ?? "master"), sql,
+        var ok = await run.RunAsync(Request.Server, Request.Database, sql,
             action => InvokeAsync(action), StateHasChanged);
 
-        if (Request.ReleaseDatabase is { } released)
+        if (Request.ReleaseDatabase is { } released && Request.Server.IsSqlServer)
             Db.ClearPool(Request.Server.ConnectionStringFor(released));
 
         if (!ok)
@@ -167,7 +167,7 @@
 
     private void ScriptToQuery()
     {
-        Session.OpenQuery(Request.Server, Request.Database ?? "master", Preview);
+        Session.OpenQuery(Request.Server, Request.Database ?? (Request.Server.IsSqlServer ? "master" : null), Preview);
         Session.CloseDialog();
     }
 

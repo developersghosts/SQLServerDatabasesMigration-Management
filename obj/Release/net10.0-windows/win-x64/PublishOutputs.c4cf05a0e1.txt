@@ -422,6 +422,10 @@ C:\Users\Omar-Fathy\AppData\Local\Programs\SQL Server Manager\Microsoft.Identity
 C:\Users\Omar-Fathy\AppData\Local\Programs\SQL Server Manager\Microsoft.IdentityModel.Protocols.OpenIdConnect.dll
 C:\Users\Omar-Fathy\AppData\Local\Programs\SQL Server Manager\Microsoft.IdentityModel.Tokens.dll
 C:\Users\Omar-Fathy\AppData\Local\Programs\SQL Server Manager\Microsoft.SqlServer.Server.dll
+C:\Users\Omar-Fathy\AppData\Local\Programs\SQL Server Manager\MySqlConnector.dll
+C:\Users\Omar-Fathy\AppData\Local\Programs\SQL Server Manager\Npgsql.dll
+C:\Users\Omar-Fathy\AppData\Local\Programs\SQL Server Manager\Oracle.ManagedDataAccess.dll
+C:\Users\Omar-Fathy\AppData\Local\Programs\SQL Server Manager\System.DirectoryServices.Protocols.dll
 C:\Users\Omar-Fathy\AppData\Local\Programs\SQL Server Manager\System.IdentityModel.Tokens.Jwt.dll
 C:\Users\Omar-Fathy\AppData\Local\Programs\SQL Server Manager\cs\Microsoft.Data.SqlClient.resources.dll
 C:\Users\Omar-Fathy\AppData\Local\Programs\SQL Server Manager\de\Microsoft.Data.SqlClient.resources.dll

@@ -15,7 +15,10 @@ public sealed class ExplorerService
         CanExpand = true
     };
 
-    public async Task<List<ExplorerNode>> LoadChildrenAsync(ExplorerNode node) => node.Kind switch
+    public Task<List<ExplorerNode>> LoadChildrenAsync(ExplorerNode node) =>
+        node.Server.IsSqlServer ? LoadSqlServerChildrenAsync(node) : Dialects.For(node.Server).LoadChildrenAsync(node);
+
+    private async Task<List<ExplorerNode>> LoadSqlServerChildrenAsync(ExplorerNode node) => node.Kind switch
     {
         NodeKind.Server => ServerFolders(node),
         NodeKind.DatabasesFolder => await DatabasesAsync(node, system: false),
@@ -60,6 +63,7 @@ public sealed class ExplorerService
     };
 
     public async Task<List<string>> GetDatabaseNamesAsync(ManagedServer server) =>
+        !server.IsSqlServer ? await Dialects.For(server).GetDatabaseNamesAsync(server) :
         await Db.QueryAsync(server.Master,
             "SELECT name FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1 ORDER BY name",
             r => r.GetString(0));
@@ -206,11 +210,11 @@ public sealed class ExplorerService
                 if (r.Int(7) == 1) parts.Add("Identity");
                 parts.Add(ScriptBuilder.FormatType(r.GetString(1), r.Int(2) == 1, null, r.Int(3), r.Int(4), r.Int(5)));
                 parts.Add(r.Int(6) == 1 ? "null" : "not null");
-                return (Name: r.GetString(0), Detail: string.Join(", ", parts), IsPk: r.Int(9) == 1);
+                return (Name: r.GetString(0), Detail: string.Join(", ", parts), Key: r.Int(9) == 1 ? "PK" : r.Int(10) == 1 ? "FK" : null);
             },
             ("@name", node.ParentQualifiedName));
 
-        return rows.Select(c => Child(node, NodeKind.Column, null, c.Name, detail: c.Detail, subType: c.IsPk ? "PK" : null)).ToList();
+        return rows.Select(c => Child(node, NodeKind.Column, null, c.Name, detail: c.Detail, subType: c.Key)).ToList();
     }
 
     private async Task<List<ExplorerNode>> KeysAsync(ExplorerNode node) =>

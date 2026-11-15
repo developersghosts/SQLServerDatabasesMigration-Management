@@ -33,7 +33,7 @@ public sealed class ManagerSession(ExplorerService explorer) : IAsyncDisposable
         Roots.Add(node);
         Selected = node;
         await ExpandAsync(node);
-        if (node.Children?.FirstOrDefault(c => c.Kind == NodeKind.DatabasesFolder) is { } databases)
+        if (node.Children?.FirstOrDefault(c => c.Kind is NodeKind.DatabasesFolder or NodeKind.SchemasFolder) is { } databases)
             await ExpandAsync(databases);
         return node;
     }
@@ -258,8 +258,9 @@ public sealed class SqlRunState
 
     public bool Succeeded => Execution is { Completed: true, HasErrors: false, Cancelled: false };
 
+    /// <param name="database">SQL Server: null means master. Other engines: null means the connection's own database.</param>
     /// <param name="dispatch">ComponentBase.InvokeAsync, to update the dialog from SqlClient threads.</param>
-    public async Task<bool> RunAsync(string connectionString, string sql, Func<Action, Task> dispatch, Action changed)
+    public async Task<bool> RunAsync(ManagedServer server, string? database, string sql, Func<Action, Task> dispatch, Action changed)
     {
         cancellation = new CancellationTokenSource();
         var execution = new QueryExecution();
@@ -269,8 +270,7 @@ public sealed class SqlRunState
 
         try
         {
-            await using var connection = await Db.OpenAsync(connectionString, cancellation.Token);
-            await QueryRunner.RunAsync(connection, sql, execution, new RunOptions
+            var options = new RunOptions
             {
                 OnBackgroundMessage = () => _ = dispatch(() =>
                 {
@@ -282,7 +282,19 @@ public sealed class SqlRunState
                     changed();
                     await Task.Yield();
                 }
-            }, cancellation.Token);
+            };
+
+            if (server.IsSqlServer)
+            {
+                await using var connection = await Db.OpenAsync(server.ConnectionStringFor(database ?? "master"), cancellation.Token);
+                await QueryRunner.RunAsync(connection, sql, execution, options, cancellation.Token);
+            }
+            else
+            {
+                var dialect = Dialects.For(server);
+                await using var connection = await dialect.OpenAsync(server, database, cancellation.Token);
+                await GenericQueryRunner.RunAsync(dialect, connection, sql, execution, options, cancellation.Token);
+            }
         }
         catch (Exception ex) when (!cancellation.IsCancellationRequested)
         {

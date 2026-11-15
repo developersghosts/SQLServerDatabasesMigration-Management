@@ -2,7 +2,7 @@
 @inject IJSRuntime JS
 
 <details class="sql-preview" open="@Open">
-    <summary>@L["ShowScript"]</summary>
+    <summary>@L[TSql ? "ShowScript" : "ShowScriptOther"]</summary>
     <div class="sql-preview-body">
         <button class="btn xs copy-btn" type="button" @onclick="CopyAsync"><Icon Name="copy" /> @L["Copy"]</button>
         <pre dir="ltr">@(string.IsNullOrWhiteSpace(Sql) ? "--" : Sql)</pre>
@@ -12,6 +12,7 @@
 @code {
     [Parameter] public string? Sql { get; set; }
     [Parameter] public bool Open { get; set; }
+    [Parameter] public bool TSql { get; set; } = true;
 
     private async Task CopyAsync() => await JS.InvokeAsync<bool>("sqlManager.copyText", Sql ?? string.Empty);
 }

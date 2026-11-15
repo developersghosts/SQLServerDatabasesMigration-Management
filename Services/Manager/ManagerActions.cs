@@ -19,6 +19,9 @@ public sealed class ManagerActions(
 
     public List<MenuItem> MenuFor(ExplorerNode n)
     {
+        if (!n.Server.IsSqlServer)
+            return OtherEngineMenu(n);
+
         List<MenuItem> items = n.Kind switch
         {
             NodeKind.Server => ServerMenu(n),
@@ -78,6 +81,271 @@ public sealed class ManagerActions(
         }
 
         return items;
+    }
+
+    // ---------- MySQL / PostgreSQL / Oracle ----------
+
+    /// <summary>Menus for the other engines: queries, scripting, rename, delete, new database / schema, sessions and settings.</summary>
+    private List<MenuItem> OtherEngineMenu(ExplorerNode n)
+    {
+        var dialect = Dialects.For(n.Server);
+        var s = n.Server;
+        // The database a query on this node opens in: MySQL / PostgreSQL database, Oracle schema
+        var database = s.Engine == DatabaseEngine.Oracle ? n.Schema ?? n.ParentSchema : n.Database;
+        var items = new List<MenuItem>();
+
+        void Script(string labelKey, Func<Task<string>> build) => items.Add(Item(labelKey, async () =>
+        {
+            try
+            {
+                session.OpenQuery(s, database, await build());
+            }
+            catch (Exception ex)
+            {
+                session.Toast(ex.Message, ToastKind.Error);
+            }
+        }));
+
+        void Template(string labelKey, string sql) => items.Add(Item(labelKey, () => session.OpenQuery(s, database, sql)));
+
+        switch (n.Kind)
+        {
+            case NodeKind.Server:
+                items.Add(Item("NewQuery", () => session.OpenQuery(s, null)));
+                items.Add(Item("ActivityMonitor", () => session.OpenQuery(s, null, dialect.ActivitySql, execute: true)));
+                items.Add(Item("Properties", () => session.OpenQuery(s, null, dialect.SettingsSql, execute: true)));
+                if (dialect.CreateDatabaseSql("x") is not null)
+                    items.Add(Item("NewDatabase", () => NewOtherDatabase(n.Children?.FirstOrDefault(c => c.Kind == NodeKind.DatabasesFolder) ?? n)));
+                items.Add(Sep);
+                items.Add(Item("Disconnect", () => session.Disconnect(n)));
+                break;
+
+            case NodeKind.DatabasesFolder when dialect.CreateDatabaseSql("x") is not null:
+                items.Add(Item("NewDatabase", () => NewOtherDatabase(n)));
+                break;
+
+            case NodeKind.Database:
+                items.Add(Item("NewQuery", () => session.OpenQuery(s, n.Name)));
+                if (s.Engine == DatabaseEngine.MySql)
+                    Template("NewTable", dialect.NewTableTemplate(n.Name));
+                Script("ScriptCreate", () => dialect.ScriptCreateAsync(n));
+                items.Add(Sep);
+                AddRenameAndDelete();
+                break;
+
+            case NodeKind.SchemasFolder when dialect.CreateSchemaSql("x") is not null:
+                items.Add(Item("NewSchema", () => NewOtherSchema(n)));
+                break;
+
+            case NodeKind.Schema:
+                items.Add(Item("NewQuery", () => session.OpenQuery(s, database)));
+                Template("NewTable", dialect.NewTableTemplate(n.Name));
+                if (!n.IsSystem)
+                {
+                    items.Add(Sep);
+                    AddRenameAndDelete();
+                }
+
+                break;
+
+            case NodeKind.TablesFolder:
+                Template("NewTable", dialect.NewTableTemplate(n.Schema));
+                break;
+
+            case NodeKind.ViewsFolder:
+                Template("NewView", dialect.NewViewTemplate(n.Schema));
+                break;
+
+            case NodeKind.ProceduresFolder:
+                Template("NewProcedure", dialect.NewProcedureTemplate(n.Schema));
+                break;
+
+            case NodeKind.FunctionsFolder:
+                Template("NewScalarFunction", dialect.NewFunctionTemplate(n.Schema));
+                break;
+
+            case NodeKind.Table or NodeKind.View:
+            {
+                var table = n.QualifiedName;
+                items.Add(Item("SelectTop1000", () => SelectTopOtherAsync(n, 1000)));
+                if (n.Kind == NodeKind.Table)
+                    items.Add(Item("EditTop200", () => SelectTopOtherAsync(n, 200)));
+                items.Add(Sep);
+                var scripts = new List<MenuItem>
+                {
+                    Item("ScriptCreate", () => ScriptOtherAsync(n, database, () => dialect.ScriptCreateAsync(n))),
+                    Item("ScriptDrop", () => session.OpenQuery(s, database, dialect.DropSql(n) ?? "")),
+                    Sep,
+                    Item("ScriptSelect", () => ScriptOtherAsync(n, database, async () => dialect.SelectTop(table, await ColumnNamesAsync(n), 1000)))
+                };
+                if (n.Kind == NodeKind.Table)
+                {
+                    scripts.Add(Item("ScriptInsert", () => ScriptOtherAsync(n, database, async () => InsertTemplate(dialect, table, await ColumnsAsync(n)))));
+                    scripts.Add(Item("ScriptUpdate", () => ScriptOtherAsync(n, database, async () => UpdateTemplate(dialect, table, await ColumnsAsync(n)))));
+                    scripts.Add(Item("ScriptDelete", () => session.OpenQuery(s, database, $"DELETE FROM {table}\n WHERE <condition>;")));
+                }
+
+                items.Add(MenuItem.Sub(n.Kind == NodeKind.Table ? "ScriptTableAs" : "ScriptViewAs", [.. scripts]));
+                items.Add(Sep);
+                if (n.Kind == NodeKind.Table)
+                    items.Add(Item("Truncate", () => ShowOther(n, "Truncate", dialect.TruncateSql(n), danger: true, confirm: "Truncate", message: "TruncateHint")));
+                AddRenameAndDelete();
+                break;
+            }
+
+            case NodeKind.Procedure or NodeKind.Function or NodeKind.Package or NodeKind.Trigger or NodeKind.Sequence or NodeKind.Synonym
+                or NodeKind.Index or NodeKind.Key:
+                Script("ScriptCreate", () => dialect.ScriptCreateAsync(n));
+                items.Add(Sep);
+                AddRenameAndDelete();
+                break;
+
+            case NodeKind.Column when n.ParentKind == NodeKind.Table:
+            case NodeKind.Login or NodeKind.Role:
+                AddRenameAndDelete();
+                break;
+        }
+
+        if (n.CanExpand || n.IsFolder)
+        {
+            items.Add(Sep);
+            items.Add(Item("Refresh", () => session.RefreshAsync(n)));
+        }
+
+        return items;
+
+        void AddRenameAndDelete()
+        {
+            if (n.Kind != NodeKind.Database || s.Engine == DatabaseEngine.PostgreSql)
+            {
+                if (dialect.RenameSql(n, "x") is not null)
+                    items.Add(Item("Rename", () => RenameOther(n)));
+            }
+
+            if (dialect.DropSql(n) is { } drop)
+                items.Add(Item("Delete", () => ShowOther(n, n.Kind == NodeKind.Database ? "DeleteDatabase" : "DeleteObject", drop,
+                    danger: true, confirm: "Delete", message: n.Kind == NodeKind.Database ? "DeleteDatabaseHint" : "ConfirmDeleteObject",
+                    refresh: n.Parent, runIn: n.Kind is NodeKind.Database ? ServerDatabase(n) : database), danger: true));
+        }
+    }
+
+    /// <summary>PostgreSQL can't drop or rename the database it's connected to, so those run in another one.</summary>
+    private static string? ServerDatabase(ExplorerNode n) =>
+        n.Server.Engine == DatabaseEngine.PostgreSql ? (n.Name == "postgres" ? "template1" : "postgres") : null;
+
+    private void ShowOther(ExplorerNode n, string titleKey, string sql, bool danger = false, string confirm = "Execute",
+        string? message = null, ExplorerNode? refresh = null, string? runIn = null) => ShowAction(new ActionRequest
+    {
+        TitleKey = titleKey,
+        Subject = n.DisplayName,
+        MessageKey = message,
+        Server = n.Server,
+        Database = runIn ?? (n.Server.Engine == DatabaseEngine.Oracle ? null : n.Database),
+        BuildSql = (_, _) => sql,
+        Danger = danger,
+        ConfirmKey = confirm,
+        ShowSql = true,
+        Refresh = refresh ?? n.Parent
+    });
+
+    private void RenameOther(ExplorerNode n)
+    {
+        var dialect = Dialects.For(n.Server);
+        var old = n.Name!;
+        ShowAction(new ActionRequest
+        {
+            TitleKey = "Rename",
+            Subject = n.DisplayName,
+            Server = n.Server,
+            Database = n.Kind == NodeKind.Database ? ServerDatabase(n) : n.Server.Engine == DatabaseEngine.Oracle ? null : n.Database,
+            Fields = [new ActionField { Key = "name", LabelKey = "NewName", Value = old, Required = true }],
+            Validate = r => r.Text("name") == old ? "NameUnchanged" : null,
+            BuildSql = (r, _) => dialect.RenameSql(n, r.Text("name")) ?? string.Empty,
+            Refresh = n.Parent
+        });
+    }
+
+    private void NewOtherDatabase(ExplorerNode folder)
+    {
+        var dialect = Dialects.For(folder.Server);
+        ShowAction(new ActionRequest
+        {
+            TitleKey = "NewDatabase",
+            Subject = folder.Server.DisplayName,
+            Server = folder.Server,
+            Database = folder.Server.Engine == DatabaseEngine.PostgreSql ? "postgres" : null,
+            Fields = [new ActionField { Key = "name", LabelKey = "DatabaseName", Required = true }],
+            BuildSql = (r, _) => dialect.CreateDatabaseSql(r.Text("name")) ?? string.Empty,
+            ConfirmKey = "Create",
+            ShowSql = true,
+            Refresh = folder.Kind == NodeKind.DatabasesFolder ? folder : null
+        });
+    }
+
+    private void NewOtherSchema(ExplorerNode folder)
+    {
+        var dialect = Dialects.For(folder.Server);
+        ShowAction(new ActionRequest
+        {
+            TitleKey = "NewSchema",
+            Subject = folder.Database,
+            Server = folder.Server,
+            Database = folder.Database,
+            Fields = [new ActionField { Key = "name", LabelKey = "Name", Required = true }],
+            BuildSql = (r, _) => dialect.CreateSchemaSql(r.Text("name")) ?? string.Empty,
+            ConfirmKey = "Create",
+            ShowSql = true,
+            Refresh = folder
+        });
+    }
+
+    private async Task<List<ColumnKeysInfo>> ColumnsAsync(ExplorerNode n) =>
+        await Dialects.For(n.Server).LoadColumnsAsync(n.Server, n.Database, n.Schema, n.Name!);
+
+    private async Task<List<string>> ColumnNamesAsync(ExplorerNode n) => (await ColumnsAsync(n)).Select(c => c.Name).ToList();
+
+    /// <summary>Select Top N; the results can be edited in the grid (by primary key).</summary>
+    private async Task SelectTopOtherAsync(ExplorerNode n, int top)
+    {
+        try
+        {
+            var dialect = Dialects.For(n.Server);
+            var columns = await ColumnNamesAsync(n);
+            var sql = dialect.SelectTop(n.QualifiedName, columns.Count > 0 ? columns : ["*"], top);
+            if (columns.Count == 0)
+                sql = sql.Replace("\"*\"", "*").Replace("`*`", "*");
+            var database = n.Server.Engine == DatabaseEngine.Oracle ? n.Schema : n.Database;
+            session.OpenQuery(n.Server, database, sql, execute: true);
+        }
+        catch (Exception ex)
+        {
+            session.Toast(ex.Message, ToastKind.Error);
+        }
+    }
+
+    private async Task ScriptOtherAsync(ExplorerNode n, string? database, Func<Task<string>> build)
+    {
+        try
+        {
+            session.OpenQuery(n.Server, database, await build());
+        }
+        catch (Exception ex)
+        {
+            session.Toast(ex.Message, ToastKind.Error);
+        }
+    }
+
+    private static string InsertTemplate(EngineDialect dialect, string table, List<ColumnKeysInfo> columns)
+    {
+        var insertable = columns.Where(c => !c.Identity && !c.Computed).ToList();
+        return $"INSERT INTO {table}\n           ({string.Join("\n           ,", insertable.Select(c => dialect.Q(c.Name)))})\n     VALUES\n           ({string.Join("\n           ,", insertable.Select(c => $"<{c.Name}, {c.Type}>"))});";
+    }
+
+    private static string UpdateTemplate(EngineDialect dialect, string table, List<ColumnKeysInfo> columns)
+    {
+        var updatable = columns.Where(c => !c.Identity && !c.Computed && !c.PrimaryKey).ToList();
+        var keys = columns.Where(c => c.PrimaryKey).Select(c => $"{dialect.Q(c.Name)} = <{c.Name}>").ToList();
+        return $"UPDATE {table}\n   SET {string.Join("\n      ,", updatable.Select(c => $"{dialect.Q(c.Name)} = <{c.Name}, {c.Type}>"))}\n WHERE {(keys.Count > 0 ? string.Join(" AND ", keys) : "<condition>")};";
     }
 
     private static MenuItem Item(string key, Func<Task> action, bool danger = false) => MenuItem.Of(key, action, danger);

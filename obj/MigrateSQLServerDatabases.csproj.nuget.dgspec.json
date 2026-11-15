@@ -5,7 +5,7 @@
   },
   "projects": {
     "F:\\Copy Database\\MigrateSQLServerDatabases\\MigrateSQLServerDatabases.csproj": {
-      "version": "1.0.0",
+      "version": "1.1.0",
       "restore": {
         "projectUniqueName": "F:\\Copy Database\\MigrateSQLServerDatabases\\MigrateSQLServerDatabases.csproj",
         "projectName": "MigrateSQLServerDatabases",
@@ -67,6 +67,18 @@
               "target": "Package",
               "version": "[1.0.2903.40, )"
             },
+            "MySqlConnector": {
+              "target": "Package",
+              "version": "[2.6.2, )"
+            },
+            "Npgsql": {
+              "target": "Package",
+              "version": "[9.0.3, )"
+            },
+            "Oracle.ManagedDataAccess.Core": {
+              "target": "Package",
+              "version": "[23.7.0, )"
+            },
             "System.Security.Cryptography.Pkcs": {
               "target": "Package",
               "version": "[10.0.13, )"
@@ -83,6 +95,20 @@
           ],
           "assetTargetFallback": true,
           "warn": true,
+          "downloadDependencies": [
+            {
+              "name": "Microsoft.AspNetCore.App.Runtime.win-x64",
+              "version": "[10.0.14, 10.0.14]"
+            },
+            {
+              "name": "Microsoft.NETCore.App.Runtime.win-x64",
+              "version": "[10.0.14, 10.0.14]"
+            },
+            {
+              "name": "Microsoft.WindowsDesktop.App.Runtime.win-x64",
+              "version": "[10.0.14, 10.0.14]"
+            }
+          ],
           "frameworkReferences": {
             "Microsoft.AspNetCore.App": {
               "privateAssets": "none"
@@ -523,6 +549,11 @@
             "System.Xml.XPath": "(,4.3.32767]",
             "System.Xml.XPath.XDocument": "(,5.0.32767]"
           }
+        }
+      },
+      "runtimes": {
+        "win-x64": {
+          "#import": []
         }
       }
     }

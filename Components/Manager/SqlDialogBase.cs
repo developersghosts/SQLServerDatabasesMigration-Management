@@ -16,19 +16,19 @@ public abstract class SqlDialogBase : LocalizedComponentBase
     protected async Task<bool> RunSqlAsync(ManagedServer server, string? database, string sql, string? release = null)
     {
         Error = null;
-        if (release is not null)
+        if (release is not null && server.IsSqlServer)
             Db.ClearPool(server.ConnectionStringFor(release));
 
-        var ok = await Run.RunAsync(server.ConnectionStringFor(database ?? "master"), sql, action => InvokeAsync(action), StateHasChanged);
+        var ok = await Run.RunAsync(server, database, sql, action => InvokeAsync(action), StateHasChanged);
 
-        if (release is not null)
+        if (release is not null && server.IsSqlServer)
             Db.ClearPool(server.ConnectionStringFor(release));
         return ok;
     }
 
     protected void ScriptToQuery(ManagedServer server, string? database, string sql)
     {
-        Session.OpenQuery(server, database ?? "master", sql);
+        Session.OpenQuery(server, database ?? (server.IsSqlServer ? "master" : null), sql);
         Session.CloseDialog();
     }
 

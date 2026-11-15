@@ -8,12 +8,46 @@
 
 <ModalFrame Title="@L["ConnectToServer"]" IconName="server" Busy="@connecting" OnClose="Close" Size="md">
     <ChildContent>
+        <div class="engine-picker" role="radiogroup" aria-label="@L["Engine"]">
+            @foreach (var (value, label) in Engines)
+            {
+                <button type="button" class="engine-btn @(engine == value ? "active" : null)" role="radio" aria-checked="@(engine == value ? "true" : "false")"
+                        @onclick="() => SetEngine(value)" disabled="@connecting">@label</button>
+            }
+        </div>
+
         <div class="seg" role="tablist">
             <button class="seg-btn @(useString ? null : "active")" @onclick="() => useString = false" disabled="@connecting">@L["ConnectionProperties"]</button>
             <button class="seg-btn @(useString ? "active" : null)" @onclick="() => useString = true" disabled="@connecting">@L["ConnectionString"]</button>
         </div>
 
-        @if (!useString)
+        @if (!useString && engine != DatabaseEngine.SqlServer)
+        {
+            <div class="form-grid">
+                <label class="form-label" for="c-server">@L["Host"] *</label>
+                <div class="host-port">
+                    <input id="c-server" class="input mono" dir="ltr" list="c-servers" autocomplete="off" @bind="server" @bind:event="oninput" @bind:after="ServerChanged" placeholder="localhost" disabled="@connecting" />
+                    <input class="input mono port-input" dir="ltr" type="number" min="1" max="65535" aria-label="@L["Port"]" title="@L["Port"]" @bind="port" disabled="@connecting" />
+                </div>
+
+                <label class="form-label" for="c-login">@L["UserName"] *</label>
+                <input id="c-login" class="input mono" dir="ltr" autocomplete="username" @bind="login" @bind:event="oninput" disabled="@connecting" />
+
+                <label class="form-label" for="c-password">@L["Password"]</label>
+                <input id="c-password" class="input" dir="ltr" type="password" autocomplete="current-password" @bind="password" @bind:event="oninput" @onkeydown="OnKey" disabled="@connecting" />
+
+                <label class="form-label" for="c-db">@L[Dialects.For(engine).DatabaseLabelKey]@(engine == DatabaseEngine.Oracle ? " *" : "")</label>
+                <div>
+                    <input id="c-db" class="input mono" dir="ltr" @bind="database" @bind:event="oninput"
+                           placeholder="@(Dialects.For(engine).DefaultDatabase ?? L["DefaultDatabase"])" disabled="@connecting" />
+                    @if (engine == DatabaseEngine.Oracle)
+                    {
+                        <div class="field-hint">@L["OracleServiceHint"]</div>
+                    }
+                </div>
+            </div>
+        }
+        else if (!useString)
         {
             <div class="form-grid">
                 <label class="form-label" for="c-server">@L["ServerName"] *</label>
@@ -72,11 +106,11 @@
         {
             <label class="field-label" for="c-cs">@L["ConnectionString"]</label>
             <textarea id="c-cs" class="cs-input" dir="ltr" rows="4" spellcheck="false" @bind="connectionString" @bind:event="oninput"
-                      placeholder="Server=localhost;Integrated Security=True;" disabled="@connecting"></textarea>
+                      placeholder="@ConnectionStringExample" disabled="@connecting"></textarea>
             <p class="hint">@L["ConnectionStringServerHint"]</p>
         }
 
-        @if (HasMigrationConnections)
+        @if (HasMigrationConnections && engine == DatabaseEngine.SqlServer)
         {
             <div class="quick-fill">
                 <span class="muted">@L["UseMigrationConnection"]:</span>
@@ -131,13 +165,45 @@
     private List<string> suggestions = [];
     private List<RecentServer> recent = [];
 
-    private sealed record RecentServer(string Server, bool SqlAuth, string? Login);
+    private sealed record RecentServer(string Server, bool SqlAuth, string? Login,
+        DatabaseEngine Engine = DatabaseEngine.SqlServer, int Port = 0, string? Database = null);
+
+    private static readonly (DatabaseEngine Value, string Label)[] Engines =
+    [
+        (DatabaseEngine.SqlServer, "SQL Server"), (DatabaseEngine.MySql, "MySQL"),
+        (DatabaseEngine.PostgreSql, "PostgreSQL"), (DatabaseEngine.Oracle, "Oracle")
+    ];
+
+    private DatabaseEngine engine = DatabaseEngine.SqlServer;
+    private int port;
+
+    private string ConnectionStringExample => engine switch
+    {
+        DatabaseEngine.MySql => "Server=localhost;Port=3306;User ID=root;Password=...;Database=mydb",
+        DatabaseEngine.PostgreSql => "Host=localhost;Port=5432;Username=postgres;Password=...;Database=postgres",
+        DatabaseEngine.Oracle => "Data Source=localhost:1521/FREEPDB1;User Id=system;Password=...",
+        _ => "Server=localhost;Integrated Security=True;"
+    };
+
+    private void SetEngine(DatabaseEngine value)
+    {
+        if (engine == value)
+            return;
+        engine = value;
+        port = value == DatabaseEngine.SqlServer ? 0 : Dialects.For(value).DefaultPort;
+        database = string.Empty;
+        error = null;
+        errorHint = null;
+        if (value != DatabaseEngine.SqlServer && string.IsNullOrWhiteSpace(server))
+            server = "localhost";
+    }
 
     private bool HasMigrationConnections =>
         !string.IsNullOrWhiteSpace(Migration.Source.ConnectionString) || !string.IsNullOrWhiteSpace(Migration.Destination.ConnectionString);
 
     private bool CanConnect => useString
         ? !string.IsNullOrWhiteSpace(connectionString)
+        : engine != DatabaseEngine.SqlServer ? !string.IsNullOrWhiteSpace(server) && !string.IsNullOrWhiteSpace(login) && port > 0
         : !string.IsNullOrWhiteSpace(server) && (!sqlAuth || !string.IsNullOrWhiteSpace(login));
 
     protected override void OnInitialized() => suggestions = LocalServers.Find();
@@ -159,11 +225,7 @@
 
         suggestions = recent.Select(r => r.Server).Concat(suggestions).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (recent.FirstOrDefault() is { } last && string.IsNullOrEmpty(server))
-        {
-            server = last.Server;
-            sqlAuth = last.SqlAuth;
-            login = last.Login ?? string.Empty;
-        }
+            Restore(last);
         else if (string.IsNullOrEmpty(server) && suggestions.Count > 0)
         {
             server = suggestions[0];
@@ -189,11 +251,18 @@
     private void ServerChanged()
     {
         error = null;
-        if (recent.FirstOrDefault(r => string.Equals(r.Server, server.Trim(), StringComparison.OrdinalIgnoreCase)) is { } saved)
-        {
-            sqlAuth = saved.SqlAuth;
-            login = saved.Login ?? string.Empty;
-        }
+        if (recent.FirstOrDefault(r => r.Engine == engine && string.Equals(r.Server, server.Trim(), StringComparison.OrdinalIgnoreCase)) is { } saved)
+            Restore(saved);
+    }
+
+    private void Restore(RecentServer saved)
+    {
+        engine = saved.Engine;
+        server = saved.Server;
+        sqlAuth = saved.SqlAuth;
+        login = saved.Login ?? string.Empty;
+        port = saved.Port > 0 ? saved.Port : engine == DatabaseEngine.SqlServer ? 0 : Dialects.For(engine).DefaultPort;
+        database = saved.Database ?? string.Empty;
     }
 
     /// <summary>4060, or 18456 state 38/40: the login is valid but the requested database can't be opened.</summary>
@@ -229,6 +298,9 @@
 
     private string Build()
     {
+        if (engine != DatabaseEngine.SqlServer)
+            return useString ? connectionString.Trim() : Dialects.For(engine).BuildConnectionString(server.Trim(), port, login.Trim(), password, database);
+
         if (useString)
             return SqlServerService.Normalize(connectionString, requireDatabase: false);
 
@@ -267,6 +339,17 @@
         try
         {
             var cs = Build();
+            if (engine != DatabaseEngine.SqlServer)
+            {
+                var dialect = Dialects.For(engine);
+                var (serverInfo, user) = await dialect.GetServerInfoAsync(cs);
+                var name = dialect.ServerName(cs);
+                await Session.AddServerAsync(new ManagedServer(name, cs, serverInfo, user, false, engine));
+                await SaveRecentAsync(useString ? name : server.Trim());
+                Session.CloseDialog();
+                return;
+            }
+
             ServerInfo info;
             try
             {
@@ -303,8 +386,10 @@
     private async Task SaveRecentAsync(string displayName)
     {
         // Never stores passwords
-        var entry = useString ? new RecentServer(displayName, false, null) : new RecentServer(displayName, sqlAuth, sqlAuth ? login.Trim() : null);
-        recent.RemoveAll(r => string.Equals(r.Server, entry.Server, StringComparison.OrdinalIgnoreCase));
+        var entry = engine != DatabaseEngine.SqlServer
+            ? new RecentServer(displayName, true, useString ? null : login.Trim(), engine, port, string.IsNullOrWhiteSpace(database) ? null : database.Trim())
+            : useString ? new RecentServer(displayName, false, null) : new RecentServer(displayName, sqlAuth, sqlAuth ? login.Trim() : null);
+        recent.RemoveAll(r => r.Engine == entry.Engine && string.Equals(r.Server, entry.Server, StringComparison.OrdinalIgnoreCase));
         recent.Insert(0, entry);
         try
         {
